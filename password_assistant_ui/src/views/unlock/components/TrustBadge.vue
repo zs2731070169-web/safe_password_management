@@ -14,7 +14,7 @@ import AppIcon from '@/components/icons/AppIcon.vue'
       :height="12.25"
       :color="'#006e2d'"
     />
-    <span class="trust-badge__text">数据已本地加密 · 不上云</span>
+    <span class="trust-badge__text">数据已本地加密</span>
   </div>
 </template>
 

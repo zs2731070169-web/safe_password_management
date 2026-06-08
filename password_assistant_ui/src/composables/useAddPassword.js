@@ -29,13 +29,12 @@ export function useAddPassword() {
   let abortController = null
 
   /**
-   * 统一的「提交 + mock 延迟 + 反馈」编排：取消前次未完请求，1 秒延迟后执行 writer。
-   * 新增与编辑共用，仅写库动作与文案不同。
+   * 统一的「提交 + mock 延迟」编排：取消前次未完请求，1 秒延迟后执行 writer。
+   * 新增与编辑共用，仅写库动作不同。成功后由视图跳转给出反馈，不弹顶部提示；仅失败时提示。
    * @param {() => object} writer 真正的写库动作（返回条目）
-   * @param {string} successText 成功提示文案
    * @returns {Promise<object | null>} 成功返回条目，失败 / 取消返回 null
    */
-  async function submit(writer, successText) {
+  async function submit(writer) {
     if (saving.value) return null
 
     // 取消前一个未完成的请求
@@ -56,7 +55,6 @@ export function useAddPassword() {
       })
 
       const entry = writer()
-      ElMessage.success(successText)
       return entry
     } catch (err) {
       if (err.name === 'AbortError') return null
@@ -73,7 +71,7 @@ export function useAddPassword() {
    * @returns {Promise<object | null>} 成功返回新建条目，失败 / 取消返回 null
    */
   function savePassword(payload) {
-    return submit(() => vaultStore.addEntry(payload), '记录保存成功')
+    return submit(() => vaultStore.addEntry(payload))
   }
 
   /**
@@ -83,7 +81,7 @@ export function useAddPassword() {
    * @returns {Promise<object | null>} 成功返回更新后条目，失败 / 取消返回 null
    */
   function updatePassword(id, payload) {
-    return submit(() => vaultStore.updateEntry(id, payload), '记录更新成功')
+    return submit(() => vaultStore.updateEntry(id, payload))
   }
 
   /**

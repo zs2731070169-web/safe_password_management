@@ -8,24 +8,6 @@
   </head>
   <body>
     <div id="app"></div>
-    <!-- 深色模式防闪烁：挂载前按持久化偏好先行加好 theme-dark 类与状态栏配色，
-         判定与 useTheme / settings store(STORAGE_KEY) 保持一致，避免刷新白屏闪烁 -->
-    <script>
-      (function () {
-        try {
-          var raw = localStorage.getItem('safevault.settings')
-          var dark = raw ? JSON.parse(raw).darkMode === true : false
-          if (dark) {
-            document.documentElement.classList.add('theme-dark')
-            document.documentElement.style.colorScheme = 'dark'
-            var meta = document.querySelector('meta[name="theme-color"]')
-            if (meta) meta.setAttribute('content', '#0f1218')
-          }
-        } catch (e) {
-          /* localStorage 不可用时静默走浅色默认 */
-        }
-      })()
-    </script>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

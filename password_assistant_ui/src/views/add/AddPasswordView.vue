@@ -16,20 +16,26 @@ import { useRoute, useRouter } from 'vue-router'
 
 import AppIcon from '@/components/icons/AppIcon.vue'
 import AddPasswordHeader from './components/AddPasswordHeader.vue'
+import AddPasswordHero from './components/AddPasswordHero.vue'
 import FormField from './components/FormField.vue'
 import GeneratePasswordField from './components/GeneratePasswordField.vue'
 import CategorySelect from './components/CategorySelect.vue'
 
 import { useVaultStore } from '@/stores/vault'
 import { useAddPassword } from '@/composables/useAddPassword'
-
-// Hero 装饰图（从 Figma node 1:341 导出）
-import heroImage from '@/assets/add-hero.png'
+import { useSheetDismiss } from '@/composables/useSheetDismiss'
+import { useSoftKeyboard } from '@/composables/useSoftKeyboard'
 
 const route = useRoute()
 const router = useRouter()
 const vaultStore = useVaultStore()
 const { saving, savePassword, updatePassword, generatePassword, cleanup } = useAddPassword()
+
+// 左滑返回手势：作为右侧弹出页，在屏幕上向左滑动即返回
+const { sheetRoot, sheetStyle, onTouchStart, onTouchMove, onTouchEnd } = useSheetDismiss()
+
+// 软键盘开合侦测：弹出时收起底部保存栏，避免被 adjustResize 顶到键盘上方悬浮在表单上
+const { keyboardOpen } = useSoftKeyboard()
 
 /** 编辑模式：路由带 :id 时为编辑已有条目，否则为新增 */
 const editId = computed(() => route.params.id ?? '')
@@ -108,16 +114,20 @@ onUnmounted(cleanup)
 </script>
 
 <template>
-  <div class="add-page">
+  <div
+    class="add-page"
+    ref="sheetRoot"
+    :style="sheetStyle"
+    @touchstart.passive="onTouchStart"
+    @touchmove="onTouchMove"
+    @touchend="onTouchEnd"
+  >
     <AddPasswordHeader :title="isEdit ? '编辑密码' : '新增密码'" />
 
-    <!-- Hero 装饰区：固定顶部，不随表单滚动 -->
+    <!-- Hero 装饰区：固定顶部，不随表单滚动。矢量实现（CSS 渐变 + 矢量盾牌图标），
+         任意屏幕 DPR 均锐利，取代原低分辨率位图 add-hero.png -->
     <div class="add-page__hero">
-      <img
-        class="add-hero-img"
-        :src="heroImage"
-        alt="密码管理小助手 · 安全加密"
-      />
+      <AddPasswordHero />
     </div>
 
     <main class="add-page__main">
@@ -191,8 +201,8 @@ onUnmounted(cleanup)
       </section>
     </main>
 
-    <!-- 底部毛玻璃操作栏 -->
-    <footer class="add-page__footer">
+    <!-- 底部毛玻璃操作栏：软键盘弹出时收起，避免被 adjustResize 顶起悬浮在表单上 -->
+    <footer class="add-page__footer" :class="{ 'is-collapsed': keyboardOpen }">
       <button
         type="button"
         class="add-submit"
@@ -209,8 +219,10 @@ onUnmounted(cleanup)
 .add-page {
   display: flex;
   flex-direction: column;
+  // 用「大视口」单位而非 dvh：软键盘弹出时容器高度不缩减，
+  // 底部保存栏稳定停在页面底部被键盘覆盖（收起键盘即可点保存），不会被顶起。
   height: 100vh;
-  height: 100dvh;
+  height: 100lvh;
   background-color: $color-bg-page;
   overflow: hidden;
 
@@ -245,19 +257,15 @@ onUnmounted(cleanup)
     margin: 0 auto;
     padding: $spacing-sm;
     padding-bottom: calc(#{$spacing-sm} + env(safe-area-inset-bottom));
-    background-color: $color-bg-frost; // 半透明页面底（可主题化，深色自动翻转）
+    background-color: $color-bg-frost; // 半透明页面底
     backdrop-filter: blur(4px);
     -webkit-backdrop-filter: blur(4px);
-  }
-}
 
-// ---- Hero 装饰图 ----
-.add-hero-img {
-  display: block;
-  width: 100%;
-  height: 128px;
-  object-fit: cover;
-  border-radius: $radius-md; // 12px
+    // 软键盘弹出时收起：移出布局，主体占满键盘上方区域，保存栏不再被顶起悬浮
+    &.is-collapsed {
+      display: none;
+    }
+  }
 }
 
 // ---- 表单卡片 ----

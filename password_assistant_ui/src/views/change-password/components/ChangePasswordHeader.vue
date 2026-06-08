@@ -32,7 +32,6 @@ function handleBack() {
       </button>
       <h1 class="cpw-header__title">修改主密码</h1>
     </div>
-    <AppIcon name="shield" :width="16" :height="20" class="cpw-header__shield" />
   </header>
 </template>
 
@@ -75,11 +74,6 @@ function handleBack() {
     line-height: $line-height-logo;
     color: $color-brand;
     white-space: nowrap;
-  }
-
-  // 右侧盾牌（线性，深色）
-  &__shield {
-    color: $color-text-strong;
   }
 }
 </style>

@@ -141,7 +141,6 @@ onBeforeUnmount(() => cancelAnimationFrame(rafId))
     <!-- 说明文案 -->
     <div class="health-gauge__desc">
       <p class="health-gauge__caption">{{ caption }}</p>
-      <p class="health-gauge__last">上次检测：{{ lastScan }}</p>
     </div>
   </section>
 </template>
@@ -233,14 +232,6 @@ onBeforeUnmount(() => cancelAnimationFrame(rafId))
     font-size: $font-size-sm;
     line-height: $line-height-sm;
     color: $color-text-regular;
-    text-align: center;
-  }
-
-  &__last {
-    font-size: $font-size-caption;
-    line-height: $line-height-caption;
-    letter-spacing: $letter-spacing-caption;
-    color: $color-text-muted;
     text-align: center;
   }
 }

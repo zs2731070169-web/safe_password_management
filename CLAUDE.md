@@ -38,11 +38,11 @@ Vue 3（Composition API，`<script setup>`，**纯 JavaScript，非 TypeScript**
 - **`composables/`** — 编排交互流程（loading 态、反馈提示、取消/AbortSignal、节流）。视图调用 composable，不直接碰 store 的异步细节。
 - **`views/<feature>/`** — 每个功能页一个目录，`XxxView.vue` 为主视图，私有子组件放其下的 `components/`。跨页复用的才放顶层 `src/components/`。
 
-mock 约定示例（`stores/`）：主密码默认 `123456`；vault 内置 5 条样本条目，刻意包含弱密码（GitHub `123456`）与重复密码（微信/YouTube 共用 `Welcome@2024`）以驱动「健康度」页逻辑。
+mock 约定示例（`stores/`）：主密码不再硬编码——新用户首次启动须经**开户流程**（`views/onboarding`，设主密码 → 存恢复码）设置主密码，主密码与「是否已开户」标记持久化到 localStorage（`safevault.master` / `safevault.account`，mock 明文，真实接入改存 Argon2id 哈希）；开发/演示时清掉 `safevault.*` 即可重走开户。vault 内置 5 条样本条目，刻意包含弱密码（GitHub `123456`）与重复密码（微信/YouTube 共用 `Welcome@2024`）以驱动「健康度」页逻辑。指纹默认关闭，开户不涉及，用户在设置页自行开启（开启录入 / 关闭前验证已实现）。
 
 ### 路由与导航过渡（`router/index.js`）
 
-- `requiresUnlock: true` 的路由由全局 `beforeEach` 守卫，未解锁一律重定向回 `/unlock`。
+- 全局 `beforeEach` 两道闸：①未开户（`auth.hasMasterPassword` 为 false）一律拦至 `/onboarding`（连解锁/找回页也拦）；②`requiresUnlock: true` 的路由未解锁则重定向回 `/unlock`。`hasMasterPassword` 在 store 初始化即从 localStorage 同步读出，守卫可同步判断。
 - `/` 下挂 `MainTabLayout.vue` 作为**常驻外壳**（固定顶栏 + 底栏），库/健康/生成/设置四个 Tab 为其子路由，URL 仍是 `/vault`、`/health` 等。Tab 页用 `meta.tab` 标记。
 - 解锁、恢复码、新增/编辑密码等为独立全屏布局（`meta.fullscreen`），不在外壳内。
 - **过渡方向有状态**：`afterEach` 据 Tab 顺序（`constants/tabs.js`）写 `routeTransition`（Tab 间左右滑）与 `outerTransition`（新增/编辑走 `sheet-up/down` 模态卡片，其余淡入淡出），视图层读取这两个响应式对象决定动画。

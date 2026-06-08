@@ -37,7 +37,8 @@ import AppIcon from '@/components/icons/AppIcon.vue'
   justify-content: center;
   height: 128px;
   border-radius: $radius-md; // 12px
-  background-color: $color-brand;
+  // 品牌蓝斜向渐变（亮 → 深，全用 Token），还原原设计稿的层次感，取代低分辨率位图
+  background: linear-gradient(135deg, $color-brand 0%, $color-link 100%);
   overflow: hidden;
 
   // 背景方块网格层

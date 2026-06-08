@@ -3,14 +3,30 @@ import { useAuthStore } from '@/stores/auth'
 import { tabIndexOf } from '@/constants/tabs'
 import { routeTransition, outerTransition } from '@/router/transition'
 
-// 走模态卡片式滑动的表单页（新增 / 编辑密码）
-const SHEET_ROUTES = new Set(['AddPassword', 'EditPassword'])
+// 走「自右侧弹出」式滑动的页面（详情 / 新增 / 编辑 / 修改主密码 / 恢复码管理 / 回收站）。
+// 这些页面均为独立全屏路由，由点击进入时自右侧滑入、离开时向右滑回（退回进来的右侧），
+// 并支持在屏幕上向左滑动、页面反向向右收回关闭的手势（见 composables/useSheetDismiss）。
+const SHEET_ROUTES = new Set([
+  'PasswordDetail',
+  'AddPassword',
+  'EditPassword',
+  'ChangeMasterPassword',
+  'RecoveryCodeManage',
+  'Trash'
+])
 
 /**
  * 路由表
  * 解锁页为应用入口；其余业务页面采用懒加载，按需分包。
  */
 const routes = [
+  {
+    path: '/onboarding',
+    name: 'Onboarding',
+    // 新用户开户流程（设主密码 → 存恢复码）：未开户时由全局守卫强制进入，无需 requiresUnlock
+    component: () => import('@/views/onboarding/OnboardingView.vue'),
+    meta: { title: '设置主密码', fullscreen: true }
+  },
   {
     path: '/unlock',
     name: 'Unlock',
@@ -139,12 +155,30 @@ const router = createRouter({
   scrollBehavior: () => ({ top: 0 })
 })
 
-// 访问受保护页面前校验解锁态：未解锁一律回到解锁页
+// 路由前置守卫：开户 → 解锁 两道闸
 router.beforeEach((to) => {
-  if (to.meta?.requiresUnlock && !useAuthStore().isUnlocked) {
+  const auth = useAuthStore()
+
+  // 1) 未开户（从未设置过主密码）：一律拦至开户页。
+  //    连解锁 / 找回页也拦——新用户尚无账户，无可解锁或找回的内容。
+  if (!auth.hasMasterPassword && to.name !== 'Onboarding') {
+    return { name: 'Onboarding' }
+  }
+
+  // 2) 已开户却访问开户页：重定向回解锁页，避免重复开户。
+  if (auth.hasMasterPassword && to.name === 'Onboarding') {
+    return { name: 'Unlock' }
+  }
+
+  // 3) 受保护页面校验解锁态：未解锁一律回到解锁页。
+  if (to.meta?.requiresUnlock && !auth.isUnlocked) {
     return { name: 'Unlock' }
   }
 })
+
+// 记录上一次的历史位置，用于在 afterEach 中判别「前进 / 后退」（Vue Router 在
+// history.state.position 维护单调递增的位置序号：push 递增、back 递减、replace 不变）。
+let lastHistoryPosition = window.history.state?.position ?? 0
 
 // 计算内层 Tab 滑动方向 + 统一维护页面标题
 router.afterEach((to, from) => {
@@ -158,13 +192,21 @@ router.afterEach((to, from) => {
       tabIndexOf(toTab) > tabIndexOf(fromTab) ? 'slide-left' : 'slide-right'
   }
 
-  // 外层过渡：进出「新增 / 编辑密码」走模态卡片滑动（同时进出，取消 out-in），
-  // 其余「外壳 ↔ 全屏页 / 详情」保持淡入淡出。
-  if (SHEET_ROUTES.has(to.name)) {
-    outerTransition.name = 'sheet-up' // 打开：新页自底部滑入
+  // 外层过渡：右侧弹出页「进入自右滑入 / 退出向右滑回」（同时进出，取消 out-in），其余淡入淡出。
+  // 因详情 / 编辑等互为弹出页，单看「目标是否弹出页」无法区分开/关，需结合前进后退方向：
+  //   - 前进进入弹出页（toSheet 且非后退）：sheet-right 自右滑入；
+  //   - 后退离开弹出页 / 前进关闭弹出页回到底层：sheet-close 向右滑回（呼应左滑反向收回手势）。
+  const position = window.history.state?.position ?? 0
+  const isBack = position < lastHistoryPosition
+  lastHistoryPosition = position
+  const toSheet = SHEET_ROUTES.has(to.name)
+  const fromSheet = SHEET_ROUTES.has(from.name)
+
+  if (toSheet && !isBack) {
+    outerTransition.name = 'sheet-right' // 打开：新页自右侧滑入
     outerTransition.mode = null
-  } else if (SHEET_ROUTES.has(from.name)) {
-    outerTransition.name = 'sheet-down' // 关闭：旧页向下滑出
+  } else if (fromSheet && (isBack || !toSheet)) {
+    outerTransition.name = 'sheet-close' // 关闭：旧页向右滑回（退回进来的右侧）
     outerTransition.mode = null
   } else {
     outerTransition.name = 'fade'

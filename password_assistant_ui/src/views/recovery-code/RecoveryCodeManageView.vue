@@ -4,16 +4,14 @@
  *
  * 入口：设置页「安全 → 恢复码管理」。像素级还原 Figma node 1:2「恢复码保存」。
  * 流程：
- *   1. 进入即拉起系统指纹验证（与登录一致，经全局 useBiometricPrompt——真机系统指纹 /
- *      浏览器降级 mock 弹窗）——重新生成会使旧码失效，属敏感操作；
- *   2. 验证通过 → 揭示页面并生成一组新的恢复码（mock）；验证取消 / 失败 → 放弃并返回设置；
+ *   1. 身份验证已在设置页前置完成（验证通过才跳转进来，避免取消时本页先滑入空白再滑回的白屏）；
+ *   2. 进入即生成一组新的恢复码（mock，旧码即失效）；
  *   3. 「复制」复制到剪贴板、「保存为图片」导出 PNG；
  *   4. 「我已安全保存」确认并返回设置；「取消」放弃本次重新生成并返回。
  *
- * 交互编排复用 useRecoveryCode（生成 / 复制 / 导出 / 清理），身份验证复用与登录同源的
- * useBiometricPrompt。本页业务为前端 mock，真实接入时只改 store/composable 实现。
+ * 交互编排复用 useRecoveryCode（生成 / 复制 / 导出 / 清理）。本页业务为前端 mock，真实接入时只改 store/composable 实现。
  */
-import { ref, onMounted, onUnmounted } from 'vue'
+import { onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
@@ -21,29 +19,10 @@ import AppIcon from '@/components/icons/AppIcon.vue'
 import RecoveryCodeCard from './components/RecoveryCodeCard.vue'
 
 import { useRecoveryCode } from '@/composables/useRecoveryCode'
-import { useBiometricPrompt } from '@/composables/useBiometricPrompt'
+import { useSheetDismiss } from '@/composables/useSheetDismiss'
 
 const router = useRouter()
 const { code, generating, saving, generate, copyCode, saveAsImage, cleanup } = useRecoveryCode()
-const { requestBiometric } = useBiometricPrompt()
-
-/** 是否已通过身份验证并揭示恢复码 */
-const revealed = ref(false)
-
-/**
- * 进入即身份验证：与登录一致，经全局指纹流程拉起系统指纹
- * （真机系统指纹框 / 浏览器降级 mock 弹窗）。
- * 通过 → 揭示页面并生成新恢复码；取消 / 失败 → 放弃并返回设置。
- */
-async function verifyIdentity() {
-  const ok = await requestBiometric('verify')
-  if (!ok) {
-    goBack()
-    return
-  }
-  revealed.value = true
-  await generate()
-}
 
 /** 返回设置：有历史则后退，否则回设置 Tab */
 function goBack() {
@@ -54,6 +33,11 @@ function goBack() {
   }
 }
 
+// 左滑返回手势：作为右侧弹出页，在屏幕上向左滑动即返回设置
+const { sheetRoot, sheetStyle, onTouchStart, onTouchMove, onTouchEnd } = useSheetDismiss({
+  onDismiss: goBack
+})
+
 /** 已安全保存：确认更新并返回 */
 function onConfirmSaved() {
   if (generating.value) return
@@ -61,18 +45,25 @@ function onConfirmSaved() {
   goBack()
 }
 
-// 进入即拉起指纹验证
-onMounted(verifyIdentity)
+// 进入即生成新恢复码（身份验证已在设置页前置完成）
+onMounted(generate)
 // 离开页面时取消进行中的生成请求
 onUnmounted(cleanup)
 </script>
 
 <template>
-  <div class="rcm-page">
+  <div
+    class="rcm-page"
+    ref="sheetRoot"
+    :style="sheetStyle"
+    @touchstart.passive="onTouchStart"
+    @touchmove="onTouchMove"
+    @touchend="onTouchEnd"
+  >
     <!-- 顶栏占位（避让状态栏，对齐 Figma 1:3 非导航顶栏） -->
     <header class="rcm-page__bar"></header>
 
-    <main v-if="revealed" class="rcm-page__main">
+    <main class="rcm-page__main">
       <!-- 视觉锚点 + 标题 -->
       <section class="rcm-hero">
         <div class="rcm-hero__badge" aria-hidden="true">
@@ -127,17 +118,6 @@ onUnmounted(cleanup)
         </button>
         <button type="button" class="rcm-cta__ghost" @click="goBack">取消</button>
       </section>
-
-      <!-- 安全说明页脚 -->
-      <footer class="rcm-footer">
-        <div class="rcm-footer__badge">
-          <AppIcon name="lock" :width="9.333" :height="11.667" />
-          <span>END-TO-END ENCRYPTED</span>
-        </div>
-        <p class="rcm-footer__note">
-          SafeVault 使用 AES-256 和 Argon2id 算法保护您的数据。账户恢复码仅在您的本地设备生成，我们绝不会接触您的任何私钥。
-        </p>
-      </footer>
     </main>
   </div>
 </template>
@@ -146,7 +126,9 @@ onUnmounted(cleanup)
 .rcm-page {
   display: flex;
   flex-direction: column;
-  min-height: 100dvh;
+  // 精确等于视口高度：避免子像素误差撑出可滚动空间
+  height: 100dvh;
+  overflow: hidden;
   background-color: $color-bg-page;
 
   // 顶栏占位
@@ -157,9 +139,11 @@ onUnmounted(cleanup)
     background-color: $color-bg-header;
   }
 
-  // 主体：可滚动，内容顶对齐
+  // 主体：固定一屏、不滚动；内容顶对齐
+  // 本页设计为「一屏装下」的固定页，主体锁死不滚动，避免亚像素溢出触发滚动/回弹
   &__main {
     flex: 1;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     width: 100%;
@@ -167,8 +151,7 @@ onUnmounted(cleanup)
     margin: 0 auto;
     padding: $spacing-lg $spacing-sm
       calc(#{$spacing-lg} + env(safe-area-inset-bottom));
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
+    overflow: hidden;
   }
 }
 

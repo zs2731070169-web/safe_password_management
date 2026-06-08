@@ -35,9 +35,11 @@ body {
   min-height: 100%;
 }
 
-// 链接 / 按钮可点击元素去除点击高亮
+// 链接 / 按钮等可点击元素去除移动端默认点击高亮（浅蓝色矩形）
+// 含以 role="button" 模拟按钮的 div（如密码卡片可点击区），否则原生高亮会漏出
 a,
-button {
+button,
+[role='button'] {
   -webkit-tap-highlight-color: transparent;
 }
 
@@ -97,47 +99,3 @@ img {
   border: 0;
 }
 
-// ---------------------------------------------------------------
-// 深色模式调色板
-// 由 useTheme（composables/useTheme.js，App.vue 挂载一次）按设置项 darkMode
-// 给 <html> 切换 .theme-dark 类即整屏换肤；这里仅覆盖 variables.scss 中
-// 「被 var 化的结构性 Token」对应的 CSS 变量（背景 / 文字 / 边框 / 毛玻璃）。
-// 品牌色 / 语义色 / 图块色为字面量，深浅模式共用，不在此覆盖。
-// 数值无 Figma 深色规范，以「层级清晰 + 文本对比达标」为准，可按目视微调。
-// ---------------------------------------------------------------
-html.theme-dark {
-  color-scheme: dark;
-
-  // —— 背景 / 表面（由浅到深拉开层级：页面 < 顶栏 < 卡片 < 输入） ——
-  --color-bg-page: #0f1218; // 页面背景（最底层近黑蓝）
-  --color-bg-header: #151a22; // 顶部导航
-  --color-bg-card: #1a1f29; // 卡片 / 列表项
-  --color-bg-input: #232a36; // 输入框 / 搜索框填充
-  --color-bg-chip: #1a1f29; // 分类 chip 默认底
-  --color-bg-tabbar: rgba(21, 26, 34, 0.92); // 底部导航毛玻璃
-  --color-bg-glass: rgba(26, 31, 41, 0.7); // 生物识别毛玻璃卡
-  --color-bg-frost: rgba(15, 18, 24, 0.8); // 新增页毛玻璃页脚
-  --color-track: #2a3140; // 滑块轨道底
-
-  // —— 文本（强 → 弱，保证主文本对比 ≥ 7:1） ——
-  --color-text-strong: #f1f3f8; // 主标题
-  --color-text-regular: #c4c8d4; // 次要正文
-  --color-text-muted: #8b90a0; // 弱化文字（账号 / 次要说明）
-  --color-text-placeholder: #6b7080; // 输入占位
-
-  // —— 边框 / 分隔线（深色下用偏亮的中性灰，作面上的可见分隔） ——
-  --color-border: #3a4150;
-
-  // —— Element Plus 运行时组件（ElMessage / overlay / input 等）深色覆盖 ——
-  // 仅覆盖已引入样式的几个组件用到的根级 EP 变量，避免深色下弹出白盒刺眼。
-  --el-bg-color: #1a1f29;
-  --el-bg-color-overlay: #1a1f29; // 消息盒 / 浮层背景
-  --el-text-color-primary: #f1f3f8;
-  --el-text-color-regular: #c4c8d4;
-  --el-text-color-secondary: #8b90a0;
-  --el-border-color: #3a4150;
-  --el-border-color-light: #3a4150;
-  --el-border-color-lighter: #2a3140;
-  --el-fill-color-blank: #232a36; // el-input 填充底
-  --el-mask-color: rgba(0, 0, 0, 0.6);
-}

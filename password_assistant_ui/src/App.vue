@@ -2,19 +2,21 @@
 /**
  * 应用根组件
  * 整个 App 为移动端风格，外层用一个居中的“手机画布”容器承载路由视图。
- * 外层路由在「主导航外壳 ↔ 全屏页 / 详情」之间默认淡入淡出；进出「新增 / 编辑密码」
- * 表单页改为移动端模态卡片式滑动（自底部滑入 / 向下滑出），过渡 name 与 mode 由路由守卫
- * 按方向写入 outerTransition，见 router/transition.js。Tab 页间横向滑动在 MainTabLayout 内。
+ * 外层路由在「主导航外壳 ↔ 全屏页」之间默认淡入淡出；右侧弹出页（详情 / 新增 / 编辑 /
+ * 修改主密码 / 恢复码管理 / 回收站）由点击进入时自右侧滑入（sheet-right），退出时向右滑回
+ * （sheet-close，呼应「在屏幕上向左滑动、页面反向向右收回」手势，见 composables/useSheetDismiss）。
+ * 过渡 name 与 mode 由路由守卫按方向写入 outerTransition，见 router/transition.js。
+ * Tab 页间横向滑动在 MainTabLayout 内。
  */
 import { outerTransition } from '@/router/transition'
 import { useAutoLock } from '@/composables/useAutoLock'
-import { useTheme } from '@/composables/useTheme'
+import { useSystemBack } from '@/composables/useSystemBack'
 import BiometricPrompt from '@/components/BiometricPrompt.vue'
 
-// 全局主题：依据「设置 · 深色模式」整屏换肤（切换 html.theme-dark + 状态栏配色），挂载一次即可
-useTheme()
 // 全局自动锁定：依据「设置 · 自动锁定」时长做定时 / 熄屏锁定，挂载一次即可
 useAutoLock()
+// 全局系统返回接管：曲面屏侧滑 / 返回键逐层收回弹窗页，而非一次性退出 App，挂载一次即可
+useSystemBack()
 </script>
 
 <template>
@@ -81,40 +83,41 @@ useAutoLock()
   opacity: 0;
 }
 
-// 移动端模态卡片式：进出两页同时存在并绝对叠放，画布全程被覆盖，无淡入淡出留白。
-.sheet-up-enter-active,
-.sheet-up-leave-active,
-.sheet-down-enter-active,
-.sheet-down-leave-active {
+// 移动端弹出式：进出两页同时存在并绝对叠放，画布全程被覆盖，无淡入淡出留白。
+.sheet-right-enter-active,
+.sheet-right-leave-active,
+.sheet-close-enter-active,
+.sheet-close-leave-active {
   position: absolute !important;
   inset: 0;
 }
 
-// 打开（sheet-up）：新页自底部滑入并置顶；旧页静止垫底（不动，仅作背景）
-.sheet-up-enter-active {
+// 打开（sheet-right）：新页自右侧滑入并置顶；旧页静止垫底（不动，仅作背景）
+.sheet-right-enter-active {
   z-index: 2;
-  box-shadow: 0 -8px 32px -8px rgba($shadow-ink, 0.22);
+  box-shadow: -8px 0 32px -8px rgba($shadow-ink, 0.22);
   transition: transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
   will-change: transform;
 }
-.sheet-up-leave-active {
+.sheet-right-leave-active {
   z-index: 1;
 }
-.sheet-up-enter-from {
-  transform: translateY(100%);
+.sheet-right-enter-from {
+  transform: translateX(100%);
 }
 
-// 关闭（sheet-down）：旧页向下滑出并置顶；新页静止垫底（露出）
-.sheet-down-leave-active {
+// 关闭（sheet-close）：旧页向右滑回并置顶（退回它进来的右侧）；新页静止垫底（自左侧露出）
+// 与「在屏幕上向左滑动、页面反向向右收回」手势同向：手势 / 返回键退出均向右滑出。
+.sheet-close-leave-active {
   z-index: 2;
-  box-shadow: 0 -8px 32px -8px rgba($shadow-ink, 0.22);
+  box-shadow: -8px 0 32px -8px rgba($shadow-ink, 0.22);
   transition: transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
   will-change: transform;
 }
-.sheet-down-enter-active {
+.sheet-close-enter-active {
   z-index: 1;
 }
-.sheet-down-leave-to {
-  transform: translateY(100%);
+.sheet-close-leave-to {
+  transform: translateX(100%);
 }
 </style>

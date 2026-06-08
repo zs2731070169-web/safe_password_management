@@ -16,6 +16,7 @@ import { useRouter } from 'vue-router'
 import AppIcon from '@/components/icons/AppIcon.vue'
 import ConfirmSheet from '@/components/ConfirmSheet.vue'
 import { useTrash } from '@/composables/useTrash'
+import { useSheetDismiss } from '@/composables/useSheetDismiss'
 
 const router = useRouter()
 const {
@@ -70,10 +71,22 @@ function handleBack() {
   if (window.history.length > 1) router.back()
   else router.replace({ name: 'Settings' })
 }
+
+// 左滑返回手势：作为右侧弹出页，在屏幕上向左滑动即返回
+const { sheetRoot, sheetStyle, onTouchStart, onTouchMove, onTouchEnd } = useSheetDismiss({
+  onDismiss: handleBack
+})
 </script>
 
 <template>
-  <div class="trash-page">
+  <div
+    class="trash-page"
+    ref="sheetRoot"
+    :style="sheetStyle"
+    @touchstart.passive="onTouchStart"
+    @touchmove="onTouchMove"
+    @touchend="onTouchEnd"
+  >
     <!-- 顶部导航 -->
     <header class="trash-header">
       <button type="button" class="trash-header__back" aria-label="返回" @click="handleBack">

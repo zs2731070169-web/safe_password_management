@@ -8,7 +8,6 @@ import { useVaultStore } from '@/stores/vault'
  * 持有设置页的全部偏好状态（安全 / 显示开关 + 自动锁定时长）与回收站数量徽标。
  * 当前为纯前端 mock：
  *   - 开关 / 自动锁定时长仅本地持久化到 localStorage，无后端；
- *   - 深色模式开关真正生效：useTheme（App.vue 挂载）监听 darkMode 整屏换肤；
  *   - 回收站数量由 vault.trashedEntries 实时派生（删除 / 恢复 / 清空后徽标自动刷新）。
  * 真实接入时仅替换文件末尾的 mock 实现（持久化改写后端），视图与 composable 不动。
  *
@@ -36,10 +35,10 @@ const DEFAULT_PREFS = {
   biometric: false,
   /** 自动锁定时长（秒），见 AUTO_LOCK_OPTIONS */
   autoLockSeconds: 60,
-  /** 深色模式开关（由 useTheme 监听并整屏换肤） */
-  darkMode: false,
   /** 账号脱敏显示开关 */
-  maskAccount: true
+  maskAccount: true,
+  /** 云备份开关（默认关闭；当前为 mock，不做真实上云） */
+  cloudBackup: false
 }
 
 export const useSettingsStore = defineStore('settings', () => {
@@ -52,10 +51,10 @@ export const useSettingsStore = defineStore('settings', () => {
   const biometric = ref(restored.biometric)
   /** 自动锁定时长（秒） */
   const autoLockSeconds = ref(restored.autoLockSeconds)
-  /** 深色模式（useTheme 监听此值整屏换肤） */
-  const darkMode = ref(restored.darkMode)
   /** 账号脱敏显示 */
   const maskAccount = ref(restored.maskAccount)
+  /** 云备份开关 */
+  const cloudBackup = ref(restored.cloudBackup)
 
   /** 回收站待清理条目数：从 vault 回收站实时派生，用于设置页行尾徽标 */
   const trashCount = computed(() => useVaultStore().trashedEntries.length)
@@ -83,10 +82,10 @@ export const useSettingsStore = defineStore('settings', () => {
 
   /**
    * 切换某个布尔型开关
-   * @param {'biometric'|'darkMode'|'maskAccount'} key 开关键名
+   * @param {'biometric'|'maskAccount'|'cloudBackup'} key 开关键名
    */
   function toggle(key) {
-    const map = { biometric, darkMode, maskAccount }
+    const map = { biometric, maskAccount, cloudBackup }
     const target = map[key]
     if (target) target.value = !target.value
   }
@@ -95,13 +94,13 @@ export const useSettingsStore = defineStore('settings', () => {
   // 持久化：任一偏好变更即写回 localStorage（mock，真实接入改写后端）
   // ---------------------------------------------------------------
   watch(
-    [biometric, autoLockSeconds, darkMode, maskAccount],
+    [biometric, autoLockSeconds, maskAccount, cloudBackup],
     () => {
       persistPrefs({
         biometric: biometric.value,
         autoLockSeconds: autoLockSeconds.value,
-        darkMode: darkMode.value,
-        maskAccount: maskAccount.value
+        maskAccount: maskAccount.value,
+        cloudBackup: cloudBackup.value
       })
     }
   )
@@ -110,8 +109,8 @@ export const useSettingsStore = defineStore('settings', () => {
     // state
     biometric,
     autoLockSeconds,
-    darkMode,
     maskAccount,
+    cloudBackup,
     trashCount,
     // actions
     setAutoLockSeconds,

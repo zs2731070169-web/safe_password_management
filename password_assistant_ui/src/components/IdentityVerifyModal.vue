@@ -43,6 +43,15 @@ const props = defineProps({
     type: String,
     default: 'brand',
     validator: (val) => ['brand', 'danger'].includes(val)
+  },
+  /**
+   * 是否提供「指纹验证」入口。默认 true（指纹 / 主密码二选一）。
+   * 置 false 时仅保留主密码验证（无指纹入口、不显示切换按钮），
+   * 供「系统指纹已在外层单独承载」的场景（如修改主密码）作主密码兜底。
+   */
+  allowBiometric: {
+    type: Boolean,
+    default: true
   }
 })
 
@@ -51,7 +60,7 @@ const emit = defineEmits(['update:modelValue', 'verified'])
 const { verifying, errorMsg, verifyByBiometric, verifyByPassword, cleanup } = useIdentityVerify()
 
 /** 当前验证方式：'biometric'（默认）| 'password' —— 同一时刻只显示一种 */
-const mode = ref('biometric')
+const mode = ref(props.allowBiometric ? 'biometric' : 'password')
 /** 主密码输入 */
 const password = ref('')
 /** 明文显示主密码 */
@@ -99,7 +108,7 @@ watch(
     } else {
       document.removeEventListener('keydown', onKeydown)
       document.body.style.overflow = ''
-      mode.value = 'biometric'
+      mode.value = props.allowBiometric ? 'biometric' : 'password'
       password.value = ''
       showPassword.value = false
       cleanup()
@@ -193,6 +202,7 @@ onBeforeUnmount(() => {
             <p v-if="errorMsg" class="iv-modal__error">{{ errorMsg }}</p>
 
             <button
+              v-if="allowBiometric"
               type="button"
               class="iv-switch"
               :disabled="verifying"

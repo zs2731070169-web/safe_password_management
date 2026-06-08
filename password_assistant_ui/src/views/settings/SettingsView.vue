@@ -8,20 +8,20 @@
  *
  * 业务状态与 mock 持久化在 settings store；交互编排（开关反馈 / 自动锁定回填 / 占位提示）在 useSettings。
  * 本版本约定：
- *   - 深色模式：真正整屏换肤（useTheme 在 App.vue 挂载，切 html.theme-dark + 状态栏配色），切换即生效；
  *   - 自动锁定时长走行项就地展开的下拉框单选（SettingItem 自绘浮层），点选即生效；
  *   - 修改主密码 / 恢复码管理 / 加密导出导入 / 回收站等暂走占位提示。
  */
 import SettingGroup from './components/SettingGroup.vue'
 import SettingItem from './components/SettingItem.vue'
 import AboutCard from './components/AboutCard.vue'
+import IdentityVerifyModal from '@/components/IdentityVerifyModal.vue'
 
 import { useSettings } from '@/composables/useSettings'
 
 const {
   biometric,
-  darkMode,
   maskAccount,
+  cloudBackup,
   trashCount,
   autoLockOptions,
   autoLockLabel,
@@ -31,7 +31,10 @@ const {
   placeholder,
   openChangePassword,
   openRecoveryCode,
-  openTrash
+  openTrash,
+  verify,
+  onIdentityVerified,
+  onIdentityVisibleChange
 } = useSettings()
 </script>
 
@@ -70,6 +73,13 @@ const {
     <!-- 【数据】 -->
     <SettingGroup title="数据">
       <SettingItem
+        type="toggle"
+        icon="cloud"
+        title="开启云备份"
+        :model-value="cloudBackup"
+        @update:model-value="toggleSwitch('cloudBackup')"
+      />
+      <SettingItem
         icon="backup"
         title="加密导出 / 导入备份"
         @activate="placeholder('加密导出 / 导入备份')"
@@ -86,13 +96,6 @@ const {
     <SettingGroup title="显示">
       <SettingItem
         type="toggle"
-        icon="dark-mode"
-        title="深色模式"
-        :model-value="darkMode"
-        @update:model-value="toggleSwitch('darkMode')"
-      />
-      <SettingItem
-        type="toggle"
         icon="eye-off"
         title="账号脱敏显示"
         :model-value="maskAccount"
@@ -105,6 +108,18 @@ const {
       <h2 class="settings-content__about-title">关于</h2>
       <AboutCard version="v1.0" @activate="placeholder($event)" />
     </div>
+
+    <!-- 敏感页前置身份验证（仅未开启指纹时出现，验证通过才跳转，避免目标页白屏） -->
+    <IdentityVerifyModal
+      :model-value="verify.visible"
+      :allow-biometric="false"
+      :title="verify.title"
+      :hint="verify.hint"
+      hint-icon="warning"
+      confirm-text="验证并继续"
+      @update:model-value="onIdentityVisibleChange"
+      @verified="onIdentityVerified"
+    />
   </main>
 </template>
 

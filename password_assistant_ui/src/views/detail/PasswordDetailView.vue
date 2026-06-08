@@ -26,17 +26,24 @@ import InfoSection from './components/InfoSection.vue'
 import {useVaultStore} from '@/stores/vault'
 import {useSettingsStore} from '@/stores/settings'
 import {usePasswordDetail} from '@/composables/usePasswordDetail'
+import {useBiometricPrompt} from '@/composables/useBiometricPrompt'
+import {useSheetDismiss} from '@/composables/useSheetDismiss'
 import {maskAccountText} from '@/utils/maskAccount'
 
 const route = useRoute()
 const router = useRouter()
 const vaultStore = useVaultStore()
 
+// 左滑返回手势：作为右侧弹出页，在屏幕上向左滑动即返回
+const {sheetRoot, sheetStyle, onTouchStart, onTouchMove, onTouchEnd} = useSheetDismiss()
+
 /** 当前条目（删除后变为 null） */
 const entry = computed(() => vaultStore.getEntry(route.params.id))
 
-// 账号展示：开启「账号脱敏显示」时打码（复制账号仍取真实明文）
-const {maskAccount} = storeToRefs(useSettingsStore())
+// 账号展示：开启「账号脱敏显示」时打码（复制账号仍取真实明文）；biometric：是否已启用指纹
+const {maskAccount, biometric} = storeToRefs(useSettingsStore())
+// 与登录解锁共用同一指纹流程（真机直接拉起系统指纹框）
+const {requestBiometric} = useBiometricPrompt()
 const displayAccount = computed(() =>
   maskAccount.value ? maskAccountText(entry.value?.account) : entry.value?.account ?? ''
 )
@@ -69,8 +76,18 @@ const urlHref = computed(() => {
 /** 删除身份验证界面显隐 */
 const verifyVisible = ref(false)
 
-/** 点击删除入口 → 直接进入身份验证界面（指纹 / 主密码） */
-function onDeleteClick() {
+/**
+ * 点击删除入口 → 与登录解锁完全一致的指纹验证：
+ *   - 已启用指纹：直接拉起系统指纹框（真机系统指纹 / 浏览器 mock），通过即删除；
+ *     用户取消静默留在本页，真实错误由 requestBiometric 内部 ElMessage 提示。
+ *   - 未启用指纹：回退到主密码验证弹窗（IdentityVerifyModal）。
+ */
+async function onDeleteClick() {
+  if (biometric.value) {
+    const ok = await requestBiometric('verify')
+    if (ok) onDeleteVerified()
+    return
+  }
   verifyVisible.value = true
 }
 
@@ -92,7 +109,14 @@ function onUpdate() {
 </script>
 
 <template>
-  <div class="detail-page">
+  <div
+    class="detail-page"
+    ref="sheetRoot"
+    :style="sheetStyle"
+    @touchstart.passive="onTouchStart"
+    @touchmove="onTouchMove"
+    @touchend="onTouchEnd"
+  >
     <DetailHeader :title="entry?.name ?? ''" @update="onUpdate"/>
 
     <template v-if="entry">
@@ -179,13 +203,14 @@ function onUpdate() {
       </footer>
     </template>
 
-    <!-- 删除身份验证界面（指纹 / 主密码，验证通过才删除） -->
+    <!-- 删除身份验证：指纹已在外层走系统指纹框（与登录一致），此弹窗仅作未开启指纹时的主密码兜底 -->
     <IdentityVerifyModal
       v-model="verifyVisible"
       title="验证身份以删除"
       hint="删除后将移至回收站，30 天内可恢复。"
       confirm-text="确认删除"
       tone="danger"
+      :allow-biometric="false"
       @verified="onDeleteVerified"
     />
   </div>

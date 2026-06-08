@@ -3,15 +3,13 @@
  * ChangePasswordView —— 修改主密码
  *
  * 入口：设置页「安全 → 修改主密码」。需已解锁进入。
- * 依 DRD 4.12「修改主密码需先验证旧凭证」：
- *   1. 进入即拉起 IdentityVerifyModal 身份验证——指纹 **或** 旧主密码二选一，通过才放行；
- *      取消 / 未通过则放弃并返回设置；
- *   2. 验证通过后揭示表单，设置新主密码（含强度计）并确认；
- *   3. 「确认修改」提交：更新为新密码，旧密码立即失效。
+ * 依 DRD 4.12「修改主密码需先验证旧凭证」，**身份验证已在设置页前置完成**（验证通过才跳转进来，
+ * 避免取消时本页先滑入空白再滑回的白屏）。本页进入即直接呈现表单：
+ *   1. 设置新主密码（含强度计）并确认；
+ *   2. 「确认修改」提交：更新为新密码，旧密码立即失效。
  *
  * 结构（自上而下）：顶栏 → 视觉锚点 + 说明 → 安全卡片（新密码 + 强度计 + 确认 + 安全建议）
- *   → 底部毛玻璃操作栏；身份验证界面为前置浮层。
- * 身份验证复用通用 IdentityVerifyModal（指纹 / 主密码），提交编排复用 useChangePassword。
+ *   → 底部毛玻璃操作栏。提交编排复用 useChangePassword。
  */
 import { ref, computed, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
@@ -20,18 +18,13 @@ import { ElMessage } from 'element-plus'
 import AppIcon from '@/components/icons/AppIcon.vue'
 import PasswordField from '@/components/PasswordField.vue'
 import PasswordStrength from '@/components/PasswordStrength.vue'
-import IdentityVerifyModal from '@/components/IdentityVerifyModal.vue'
 import ChangePasswordHeader from './components/ChangePasswordHeader.vue'
 
 import { useChangePassword } from '@/composables/useChangePassword'
+import { useSheetDismiss } from '@/composables/useSheetDismiss'
 
 const router = useRouter()
 const { submitting, changeMasterPassword, generatePassword, cleanup } = useChangePassword()
-
-/** 身份验证界面显隐（进入即打开） */
-const verifyVisible = ref(true)
-/** 是否已通过身份验证并揭示表单 */
-const verified = ref(false)
 
 const newPassword = ref('')
 const confirmPassword = ref('')
@@ -59,20 +52,10 @@ function goBack() {
   }
 }
 
-/** 身份验证通过 → 揭示表单 */
-function onVerified() {
-  verified.value = true
-  verifyVisible.value = false
-}
-
-/**
- * 身份验证界面关闭：未通过即关闭（取消 / ESC / 点遮罩）视为放弃，返回设置。
- * @param {boolean} val 目标显隐
- */
-function onVerifyClose(val) {
-  verifyVisible.value = val
-  if (!val && !verified.value) goBack()
-}
+// 左滑返回手势：作为右侧弹出页，在屏幕上向左滑动即返回设置
+const { sheetRoot, sheetStyle, onTouchStart, onTouchMove, onTouchEnd } = useSheetDismiss({
+  onDismiss: goBack
+})
 
 /**
  * 一键生成强主密码：用已保存的生成规则产出，同时填入「新密码」与「确认密码」，
@@ -104,10 +87,17 @@ onUnmounted(cleanup)
 </script>
 
 <template>
-  <div class="cpw-page">
+  <div
+    class="cpw-page"
+    ref="sheetRoot"
+    :style="sheetStyle"
+    @touchstart.passive="onTouchStart"
+    @touchmove="onTouchMove"
+    @touchend="onTouchEnd"
+  >
     <ChangePasswordHeader />
 
-    <main v-if="verified" class="cpw-page__main">
+    <main class="cpw-page__main">
       <!-- 视觉锚点 + 说明 -->
       <section class="cpw-hero">
         <div class="cpw-hero__badge" aria-hidden="true">
@@ -155,8 +145,8 @@ onUnmounted(cleanup)
       </section>
     </main>
 
-    <!-- 底部毛玻璃操作栏（验证通过后才出现） -->
-    <footer v-if="verified" class="cpw-page__footer">
+    <!-- 底部毛玻璃操作栏 -->
+    <footer class="cpw-page__footer">
       <button
         type="button"
         class="cpw-submit"
@@ -167,17 +157,6 @@ onUnmounted(cleanup)
         <span>{{ submitting ? '提交中…' : '确认修改' }}</span>
       </button>
     </footer>
-
-    <!-- 身份验证前置浮层：指纹 或 旧主密码二选一，通过才放行 -->
-    <IdentityVerifyModal
-      :model-value="verifyVisible"
-      title="验证身份以修改主密码"
-      hint="修改后请牢记新主密码，旧密码将立即失效。"
-      hint-icon="warning"
-      confirm-text="验证并继续"
-      @update:model-value="onVerifyClose"
-      @verified="onVerified"
-    />
   </div>
 </template>
 
