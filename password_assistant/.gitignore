@@ -1,0 +1,26 @@
+# 环境变量（含密钥，禁止入库）
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# 虚拟环境（uv sync 自动生成，uv.lock 已锁定版本，无需入库）
+.venv/
+venv/
+env/
+
+# uv 缓存
+.uv/
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+
+# 日志
+*.log

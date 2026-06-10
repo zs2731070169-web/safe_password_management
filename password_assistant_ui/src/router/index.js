@@ -1,18 +1,21 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { useAuthStore } from '@/stores/auth'
+import { useCloudAccountStore } from '@/stores/cloudAccount'
 import { tabIndexOf } from '@/constants/tabs'
 import { routeTransition, outerTransition } from '@/router/transition'
 
-// 走「自右侧弹出」式滑动的页面（详情 / 新增 / 编辑 / 修改主密码 / 恢复码管理 / 回收站）。
-// 这些页面均为独立全屏路由，由点击进入时自右侧滑入、离开时向右滑回（退回进来的右侧），
-// 并支持在屏幕上向左滑动、页面反向向右收回关闭的手势（见 composables/useSheetDismiss）。
+// 走「自右侧弹出」式滑动的页面（详情 / 新增 / 编辑 / 修改账户密码 / 回收站，
+// 以及登录流程的「账户密码登录 / 创建云账户 / 重置密码」三页）。
+// 这些页面由点击进入时自右侧滑入、离开 / 返回时向右滑回（退回进来的右侧）。
 const SHEET_ROUTES = new Set([
   'PasswordDetail',
   'AddPassword',
   'EditPassword',
   'ChangeMasterPassword',
-  'RecoveryCodeManage',
-  'Trash'
+  'Trash',
+  // 登录流程：从登录首页（Unlock）自右侧弹出 / 收回
+  'MasterPassword', // 账户密码登录
+  'Onboarding', // 创建云账户（注册）
+  'ResetPassword' // 忘记密码·重置
 ])
 
 /**
@@ -23,37 +26,30 @@ const routes = [
   {
     path: '/onboarding',
     name: 'Onboarding',
-    // 新用户开户流程（设主密码 → 存恢复码）：未开户时由全局守卫强制进入，无需 requiresUnlock
+    // 新用户开户流程（创建云账户：邮箱 + 密码 + 验证码）：未注册时由全局守卫强制进入，无需 requiresUnlock
     component: () => import('@/views/onboarding/OnboardingView.vue'),
-    meta: { title: '设置主密码', fullscreen: true }
+    meta: { title: '创建云账户', fullscreen: true }
   },
   {
     path: '/unlock',
     name: 'Unlock',
-    // 解锁页是首屏入口，直接静态引入以保证首屏速度
+    // 登录页是首屏入口，直接静态引入以保证首屏速度
     component: () => import('@/views/unlock/UnlockView.vue'),
-    meta: { title: '解锁 SafeVault', fullscreen: true }
+    meta: { title: '登录 SafeVault', fullscreen: true }
   },
   {
     path: '/unlock/master',
     name: 'MasterPassword',
-    // 主密码解锁页：属于解锁流程内的子页面，无需 requiresUnlock 守卫
+    // 账户密码登录页：属于登录流程内的子页面，无需 requiresUnlock 守卫
     component: () => import('@/views/unlock/PasswordView.vue'),
-    meta: { title: '主密码解锁', fullscreen: true }
+    meta: { title: '账户密码登录', fullscreen: true }
   },
   {
     path: '/recovery',
-    name: 'RecoveryCode',
-    // 找回访问权限·步骤 1/2：验证恢复码。用户被锁在外面时进入，无需 requiresUnlock
-    component: () => import('@/views/recovery/RecoveryCodeView.vue'),
-    meta: { title: '找回访问权限', fullscreen: true }
-  },
-  {
-    path: '/recovery/reset',
     name: 'ResetPassword',
-    // 找回访问权限·步骤 2/2：重设主密码。恢复码验证通过后进入
+    // 忘记密码：邮箱验证码重置账户密码。用户被锁在外面时进入，无需 requiresUnlock
     component: () => import('@/views/recovery/ResetPasswordView.vue'),
-    meta: { title: '重设主密码', fullscreen: true }
+    meta: { title: '重置密码', fullscreen: true }
   },
   {
     // 主导航常驻外壳：固定顶栏 + 底栏由它提供，库 / 健康为其内容子路由。
@@ -104,18 +100,10 @@ const routes = [
   {
     path: '/settings/change-password',
     name: 'ChangeMasterPassword',
-    // 修改主密码：从设置「安全 → 修改主密码」进入，需已解锁。
-    // 同页完成「验证当前主密码 + 设置新密码」，依 DRD 4.12「修改主密码需先验证旧凭证」。
+    // 修改账户密码：从设置「安全 → 修改账户密码」进入，需已登录。
+    // 同页完成「验证当前密码 + 设置新密码」，依「修改密码需先验证旧凭证」。
     component: () => import('@/views/change-password/ChangePasswordView.vue'),
-    meta: { title: '修改主密码', requiresUnlock: true }
-  },
-  {
-    path: '/settings/recovery-code',
-    name: 'RecoveryCodeManage',
-    // 恢复码管理（重新生成并保存）：从设置「安全 → 恢复码管理」进入，需已解锁。
-    // 进入即要求身份验证，通过后揭示并生成新恢复码。
-    component: () => import('@/views/recovery-code/RecoveryCodeManageView.vue'),
-    meta: { title: '恢复码管理', requiresUnlock: true }
+    meta: { title: '修改账户密码', requiresUnlock: true }
   },
   {
     path: '/settings/trash',
@@ -155,23 +143,24 @@ const router = createRouter({
   scrollBehavior: () => ({ top: 0 })
 })
 
-// 路由前置守卫：开户 → 解锁 两道闸
+// 路由前置守卫：创建账户 → 登录 两道闸
 router.beforeEach((to) => {
-  const auth = useAuthStore()
+  const auth = useCloudAccountStore()
 
-  // 1) 未开户（从未设置过主密码）：一律拦至开户页。
-  //    连解锁 / 找回页也拦——新用户尚无账户，无可解锁或找回的内容。
-  if (!auth.hasMasterPassword && to.name !== 'Onboarding') {
+  // 1) 未注册云账户：一律拦至创建账户页。
+  //    连登录 / 找回页也拦——新用户尚无账户，无可登录或找回的内容。
+  if (!auth.hasAccount && to.name !== 'Onboarding') {
     return { name: 'Onboarding' }
   }
 
-  // 2) 已开户却访问开户页：重定向回解锁页，避免重复开户。
-  if (auth.hasMasterPassword && to.name === 'Onboarding') {
+  // 2) 已注册却访问创建账户页：默认重定向回登录页，避免误入重复创建；
+  //    但登录页「新用户注册」入口显式带 ?register=1，放行其有意创建新账户（覆盖旧绑定）。
+  if (auth.hasAccount && to.name === 'Onboarding' && to.query.register !== '1') {
     return { name: 'Unlock' }
   }
 
-  // 3) 受保护页面校验解锁态：未解锁一律回到解锁页。
-  if (to.meta?.requiresUnlock && !auth.isUnlocked) {
+  // 3) 受保护页面校验登录态：未登录一律回到登录页。
+  if (to.meta?.requiresUnlock && !auth.loggedIn) {
     return { name: 'Unlock' }
   }
 })

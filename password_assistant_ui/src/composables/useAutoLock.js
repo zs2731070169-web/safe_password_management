@@ -1,7 +1,7 @@
 import { watch, onMounted, onBeforeUnmount } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
-import { useAuthStore } from '@/stores/auth'
+import { useCloudAccountStore } from '@/stores/cloudAccount'
 import { useSettingsStore } from '@/stores/settings'
 
 /**
@@ -19,9 +19,10 @@ import { useSettingsStore } from '@/stores/settings'
  */
 export function useAutoLock() {
   const router = useRouter()
-  const auth = useAuthStore()
+  const auth = useCloudAccountStore()
   const settings = useSettingsStore()
-  const { isUnlocked } = storeToRefs(auth)
+  // 登录态即「已解锁」：未登录不计时，自动锁定触发即登出并回登录页
+  const { loggedIn: isUnlocked } = storeToRefs(auth)
   const { autoLockSeconds } = storeToRefs(settings)
 
   /** 前台空闲计时器句柄 */

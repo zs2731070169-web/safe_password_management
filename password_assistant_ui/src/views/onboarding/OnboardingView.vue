@@ -1,36 +1,20 @@
 <script setup>
 /**
- * OnboardingView —— 新用户开户流程（全屏，两步）
+ * OnboardingView —— 新用户开户流程（全屏，单步：创建云账户）
  *
- * 首次启动（未开户）由路由守卫强制进入。两步：
- *   步骤 1 SetupPasswordStep —— 设置主密码（持久化），保证主密码必设且早于任何指纹录入；
- *   步骤 2 SaveRecoveryStep  —— 生成并保存恢复码，确认后解锁并进入密码库。
- *
- * 单路由内以 step 切换两步（不新增多余路由）；视觉沿用解锁页的光晕 + 居中布局语言。
+ * 首次启动（未注册云账户）由路由守卫强制进入。统一身份后开户即「创建云账户」：
+ * 填邮箱 + 密码 + 邮箱验证码，注册成功即登录并进入密码库（找回密码改走邮箱验证码重置，
+ * 不再有恢复码步骤）。视觉沿用解锁页的光晕 + 居中布局语言。
  * 指纹保持默认关闭，开户不触碰，用户日后在设置页自行开启。
  */
-import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import SetupPasswordStep from './components/SetupPasswordStep.vue'
-import SaveRecoveryStep from './components/SaveRecoveryStep.vue'
-
-import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
-const authStore = useAuthStore()
 
-/** 当前步骤：1=设主密码 / 2=存恢复码 */
-const step = ref(1)
-
-/** 步骤 1 完成：主密码已持久化，进入步骤 2 */
-function onPasswordDone() {
-  step.value = 2
-}
-
-/** 步骤 2 完成：身份已于开户设立，标记解锁并进入密码库 */
-function onRecoveryDone() {
-  authStore.markUnlocked()
+/** 创建账户完成：register 已置为已登录，直接进入密码库 */
+function onAccountCreated() {
   router.replace({ name: 'Vault' })
 }
 </script>
@@ -42,10 +26,7 @@ function onRecoveryDone() {
     <div class="onboarding-page__glow onboarding-page__glow--bottom" aria-hidden="true"></div>
 
     <div class="onboarding-page__main">
-      <Transition name="fade" mode="out-in">
-        <SetupPasswordStep v-if="step === 1" key="step1" @done="onPasswordDone" />
-        <SaveRecoveryStep v-else key="step2" @done="onRecoveryDone" />
-      </Transition>
+      <SetupPasswordStep @done="onAccountCreated" />
     </div>
   </div>
 </template>

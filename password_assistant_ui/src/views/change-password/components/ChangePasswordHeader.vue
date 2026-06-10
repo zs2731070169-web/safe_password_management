@@ -1,7 +1,7 @@
 <script setup>
 /**
- * 修改主密码·顶部导航
- * 左侧返回 + 标题「修改主密码」，右侧盾牌图标。
+ * 修改账户密码·顶部导航
+ * 左侧返回 + 标题「修改账户密码」，右侧盾牌图标。
  * 结构与 ResetPasswordHeader 同构，返回回退到设置页。
  */
 import { useRouter } from 'vue-router'
@@ -30,7 +30,7 @@ function handleBack() {
       >
         <AppIcon name="arrow-left" :size="16" />
       </button>
-      <h1 class="cpw-header__title">修改主密码</h1>
+      <h1 class="cpw-header__title">修改账户密码</h1>
     </div>
   </header>
 </template>

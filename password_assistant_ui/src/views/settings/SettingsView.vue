@@ -4,17 +4,20 @@
  *
  * 仅承载中间可滚动内容；固定顶栏、底栏由常驻外壳 MainTabLayout 提供
  * （设置 Tab 顶栏不显示搜索，由外壳按 activeTab 控制）。
- * 像素级还原 DRD 4.12：安全 / 数据 / 显示 / 关于 四个分组，开关型与跳转型混排，关键安全项置顶。
+ * 顶部为云账户卡片，下接 安全 / 数据 / 显示 / 关于 四个分组，底部为退出登录。
  *
- * 业务状态与 mock 持久化在 settings store；交互编排（开关反馈 / 自动锁定回填 / 占位提示）在 useSettings。
- * 本版本约定：
- *   - 自动锁定时长走行项就地展开的下拉框单选（SettingItem 自绘浮层），点选即生效；
- *   - 修改主密码 / 恢复码管理 / 加密导出导入 / 回收站等暂走占位提示。
+ * 业务状态与 mock 持久化在 settings / cloudAccount store；交互编排（开关反馈 / 自动锁定回填 /
+ * 身份验证 / 退出登录）在 useSettings。自动锁定时长走行项就地展开的下拉框单选，点选即生效。
  */
+import { ref } from 'vue'
+
 import SettingGroup from './components/SettingGroup.vue'
 import SettingItem from './components/SettingItem.vue'
 import AboutCard from './components/AboutCard.vue'
+import CloudAccountCard from './components/CloudAccountCard.vue'
 import IdentityVerifyModal from '@/components/IdentityVerifyModal.vue'
+import ConfirmSheet from '@/components/ConfirmSheet.vue'
+import AppIcon from '@/components/icons/AppIcon.vue'
 
 import { useSettings } from '@/composables/useSettings'
 
@@ -25,21 +28,29 @@ const {
   trashCount,
   autoLockOptions,
   autoLockLabel,
+  cloudLoggedIn,
+  cloudEmail,
   toggleSwitch,
   toggleBiometric,
   setAutoLock,
   placeholder,
   openChangePassword,
-  openRecoveryCode,
   openTrash,
+  logout,
   verify,
   onIdentityVerified,
   onIdentityVisibleChange
 } = useSettings()
+
+/** 退出登录二次确认面板显隐 */
+const logoutConfirm = ref(false)
 </script>
 
 <template>
   <main class="settings-content">
+    <!-- 顶部：云账户卡片（已登录显示邮箱，未登录显示未登录） -->
+    <CloudAccountCard :logged-in="cloudLoggedIn" :email="cloudEmail" />
+
     <!-- 【安全】关键安全项置顶 -->
     <SettingGroup title="安全">
       <SettingItem
@@ -59,14 +70,8 @@ const {
       />
       <SettingItem
         icon="password"
-        title="修改主密码"
+        title="修改账户密码"
         @activate="openChangePassword"
-      />
-      <SettingItem
-        icon="refresh"
-        title="恢复码管理"
-        subtitle="重新生成恢复码"
-        @activate="openRecoveryCode"
       />
     </SettingGroup>
 
@@ -109,6 +114,12 @@ const {
       <AboutCard version="v1.0" @activate="placeholder($event)" />
     </div>
 
+    <!-- 底部：退出登录（软登出，回登录页） -->
+    <button type="button" class="settings-content__logout" @click="logoutConfirm = true">
+      <AppIcon name="login" :size="18" />
+      <span>退出登录</span>
+    </button>
+
     <!-- 敏感页前置身份验证（仅未开启指纹时出现，验证通过才跳转，避免目标页白屏） -->
     <IdentityVerifyModal
       :model-value="verify.visible"
@@ -119,6 +130,16 @@ const {
       confirm-text="验证并继续"
       @update:model-value="onIdentityVisibleChange"
       @verified="onIdentityVerified"
+    />
+
+    <!-- 退出登录二次确认 -->
+    <ConfirmSheet
+      v-model="logoutConfirm"
+      title="退出登录"
+      message="将退出当前云账户，需重新登录后才能访问保险库。"
+      confirm-text="退出登录"
+      tone="danger"
+      @confirm="logout"
     />
   </main>
 </template>
@@ -148,6 +169,29 @@ const {
     line-height: $line-height-section;
     letter-spacing: $letter-spacing-label;
     color: $color-text-muted;
+  }
+
+  // 退出登录：纯文字按钮（无边框 / 无背景 / 无浮层，仅红字 + 轻微按压反馈）
+  &__logout {
+    @include button-reset;
+    @include flex-center;
+    gap: $spacing-xs; // 8px
+    width: 100%;
+    height: 52px;
+    margin-top: $spacing-xs;
+    color: $color-danger;
+    font-size: $font-size-body; // 16px
+    font-weight: $font-weight-medium;
+    line-height: $line-height-body;
+    transition: opacity $transition-base;
+
+    &:hover {
+      opacity: 0.7;
+    }
+
+    &:active {
+      opacity: 0.5;
+    }
   }
 }
 </style>

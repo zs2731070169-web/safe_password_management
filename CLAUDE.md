@@ -44,14 +44,15 @@ mock 约定示例（`stores/`）：主密码不再硬编码——新用户首次
 
 - 全局 `beforeEach` 两道闸：①未开户（`auth.hasMasterPassword` 为 false）一律拦至 `/onboarding`（连解锁/找回页也拦）；②`requiresUnlock: true` 的路由未解锁则重定向回 `/unlock`。`hasMasterPassword` 在 store 初始化即从 localStorage 同步读出，守卫可同步判断。
 - `/` 下挂 `MainTabLayout.vue` 作为**常驻外壳**（固定顶栏 + 底栏），库/健康/生成/设置四个 Tab 为其子路由，URL 仍是 `/vault`、`/health` 等。Tab 页用 `meta.tab` 标记。
-- 解锁、恢复码、新增/编辑密码等为独立全屏布局（`meta.fullscreen`），不在外壳内。
-- **过渡方向有状态**：`afterEach` 据 Tab 顺序（`constants/tabs.js`）写 `routeTransition`（Tab 间左右滑）与 `outerTransition`（新增/编辑走 `sheet-up/down` 模态卡片，其余淡入淡出），视图层读取这两个响应式对象决定动画。
+- 开户/解锁流程页（开户、解锁、主密码、找回恢复码、重设主密码）为 `meta.fullscreen` 全屏布局，不在外壳内。
+- **「自右弹出」类页面**（详情、新增、编辑、修改主密码、恢复码管理、回收站）由 `router/index.js` 顶部的 `SHEET_ROUTES` 集合枚举：它们是与外壳平级的顶层路由（无 `fullscreen`、不在 `MainTabLayout` 内），点击进入时自右滑入、离开时向右滑回，并支持屏幕上向左滑动反向收回的手势（见 `composables/useSheetDismiss`）。
+- **过渡方向有状态**：`afterEach` 同时维护两个响应式对象供视图读取 —— `routeTransition`（据 `constants/tabs.js` 的 Tab 顺序决定 Tab 间左右滑），与 `outerTransition`（`SHEET_ROUTES` 页面前进打开走 `sheet-right` 自右滑入、关闭/后退走 `sheet-close` 向右滑回，其余 `fade` 淡入淡出）。开/关方向靠 `window.history.state.position` 比对前进后退判别，因详情↔编辑互为弹出页，单看目标无法区分开关。
 - 路由注册顺序敏感：`/vault/add`、`/vault/:id/edit` 必须先于 `/vault/:id`，否则被动态段误匹配。
 
 ### 样式系统
 
 - 设计 Token 全集中在 `styles/variables.scss`（颜色/字号/间距/圆角/阴影），`vite.config.js` 通过 `additionalData` 全局注入 `variables.scss` 与 `mixins.scss`，业务 SCSS 可直接用变量/mixin。**业务样式禁止硬编码颜色/尺寸，一律引用 Token。**
-- 双主题 light/dark + 全局开关（深色模式 / 大字体「Senior +2pt」/ 账号脱敏），见 `composables/useTheme.js`、`stores/settings.js`。
+- 当前仅单一 light 主题：`variables.scss` 无 dark token，亦无 `useTheme.js` / 大字体缩放。`stores/settings.js` 持有的偏好只有四项 —— 生物识别、自动锁定时长、账号脱敏（`maskAccount`）、云备份；其中只有**账号脱敏**影响显示（经 `utils/maskAccount.js`）。新增主题/字号能力时需自行补 token 与应用逻辑。
 - 双字体策略：Inter 用于 UI，JetBrains Mono 用于敏感数据（密码/恢复码/2FA）；敏感数据默认脱敏显示 `●●●●●●`。
 - 移动端画布：`App.vue` 居中约束宽度（约 390–480px）模拟手机；桌面浏览器建议用 DevTools 移动视图查看。
 

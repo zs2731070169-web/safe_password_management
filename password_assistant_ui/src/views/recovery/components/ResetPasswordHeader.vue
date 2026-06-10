@@ -1,20 +1,19 @@
 <script setup>
 /**
- * 重设主密码·顶部导航
+ * 重置密码·顶部导航
  * 左侧返回 + 标题（左对齐紧挨），右侧盾牌图标。
- * 像素级还原 Figma node 1:326「Header - TopAppBar」。
  */
 import { useRouter } from 'vue-router'
 import AppIcon from '@/components/icons/AppIcon.vue'
 
 const router = useRouter()
 
-/** 返回：有历史则后退，否则回到验证恢复码页 */
+/** 返回：有历史则后退，否则回到登录页 */
 function handleBack() {
   if (window.history.length > 1) {
     router.back()
   } else {
-    router.replace({ name: 'RecoveryCode' })
+    router.replace({ name: 'Unlock' })
   }
 }
 </script>
@@ -30,7 +29,7 @@ function handleBack() {
       >
         <AppIcon name="arrow-left" :size="16" />
       </button>
-      <h1 class="reset-header__title">重设主密码</h1>
+      <h1 class="reset-header__title">重置密码</h1>
     </div>
     <AppIcon name="shield" :width="16" :height="20" class="reset-header__shield" />
   </header>

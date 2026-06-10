@@ -21,21 +21,21 @@ import AppIcon from '@/components/icons/AppIcon.vue'
 import { useUnlock } from '@/composables/useUnlock'
 import { useSettingsStore } from '@/stores/settings'
 
-const { loading, unlockByBiometric } = useUnlock()
+const { loading, loginByBiometric } = useUnlock()
 const router = useRouter()
 
-// 是否已启用/录入生物识别：未启用时登录页不展示指纹解锁入口（录入只在设置页进行）
+// 是否已启用/录入生物识别：未启用时登录页不展示指纹登录入口（录入只在设置页进行）
 const { biometric } = storeToRefs(useSettingsStore())
 
-/** 跳转到独立的主密码解锁界面（替代原弹窗输入，对齐设计稿流程） */
+/** 跳转到独立的账户密码登录界面 */
 function goMasterPassword() {
   if (loading.value) return
   router.push({ name: 'MasterPassword' })
 }
 
-/** 忘记主密码 → 跳转恢复码页面 */
-function handleForgotPassword() {
-  router.push({ name: 'RecoveryCode' })
+/** 新用户注册 → 跳转创建云账户页（带 register 意图，放行已注册用户重新注册） */
+function handleRegister() {
+  router.push({ name: 'Onboarding', query: { register: '1' } })
 }
 </script>
 
@@ -53,10 +53,10 @@ function handleForgotPassword() {
       <BrandIdentity />
 
       <section class="unlock-page__biometric">
-        <BiometricButton v-if="biometric" :loading="loading" @trigger="unlockByBiometric" />
+        <BiometricButton v-if="biometric" :loading="loading" @trigger="loginByBiometric" />
 
         <div class="unlock-page__secondary">
-          <!-- 使用主密码解锁 -->
+          <!-- 使用密码登录 -->
           <button
             type="button"
             class="master-btn"
@@ -64,12 +64,12 @@ function handleForgotPassword() {
             @click="goMasterPassword"
           >
             <AppIcon name="key" :width="22" :height="12" :color="'#004ac6'" />
-            <span class="master-btn__text">使用主密码解锁</span>
+            <span class="master-btn__text">使用密码登录</span>
           </button>
 
-          <!-- 忘记主密码 -->
-          <button type="button" class="forgot-btn" @click="handleForgotPassword">
-            忘记主密码？
+          <!-- 新用户注册 -->
+          <button type="button" class="register-btn" @click="handleRegister">
+            没有账号？新用户注册
           </button>
         </div>
       </section>
@@ -200,14 +200,14 @@ function handleForgotPassword() {
   }
 }
 
-// 忘记主密码 —— 文字链接
-.forgot-btn {
+// 新用户注册 —— 文字链接（品牌色，正向 CTA）
+.register-btn {
   @include button-reset;
   padding: 4px 8px;
   font-size: $font-size-caption;
   line-height: $line-height-caption;
   letter-spacing: $letter-spacing-caption;
-  color: $color-text-warn;
+  color: $color-brand;
   transition: opacity $transition-base;
 
   &:hover {
@@ -215,7 +215,7 @@ function handleForgotPassword() {
   }
 
   &:focus-visible {
-    outline: 2px solid rgba($color-text-warn, 0.4);
+    outline: 2px solid rgba($color-brand, 0.4);
     outline-offset: 2px;
     border-radius: 4px;
   }

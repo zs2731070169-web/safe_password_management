@@ -1,15 +1,14 @@
 <script setup>
 /**
- * MasterPasswordView —— 主密码解锁界面
+ * PasswordView —— 账户密码登录界面
  *
- * 像素级还原 Figma「启动/解锁页-带主密码输入态」(node 1:525)。
- * 结构（自上而下，三段 space-between）：
+ * 统一身份后用云账户（邮箱 + 密码）登录。结构（自上而下，三段 space-between）：
  *   1. 背景氛围光晕（左上蓝 / 右下绿）
  *   2. 顶部品牌区：方形盾牌徽标 + 标题 + 副标题
- *   3. 中部表单：主密码输入框 + 立即解锁主按钮 + 生物识别就绪卡
- *   4. 底部次要操作：改用指纹解锁 + 忘记主密码
+ *   3. 中部表单：邮箱输入 + 密码输入 + 登录主按钮
+ *   4. 底部次要操作：改用指纹登录 + 忘记密码
  *
- * 交互编排复用 useUnlock：解锁成功跳转密码库（Vault），失败 ElMessage 提示。
+ * 邮箱预填已绑定账户（软登出后仍记住）。交互编排复用 useUnlock：登录成功跳转密码库。
  */
 import { ref } from 'vue'
 import { storeToRefs } from 'pinia'
@@ -20,25 +19,30 @@ import PasswordInput from './components/PasswordInput.vue'
 
 import { useUnlock } from '@/composables/useUnlock'
 import { useSettingsStore } from '@/stores/settings'
+import { useCloudAccountStore } from '@/stores/cloudAccount'
 
-const { loading, unlockByMasterPassword, unlockByBiometric } = useUnlock()
+const { loading, loginByPassword, loginByBiometric } = useUnlock()
 const router = useRouter()
 
-// 未启用生物识别时不展示「改用指纹解锁」入口
+// 未启用生物识别时不展示「改用指纹登录」入口
 const { biometric } = storeToRefs(useSettingsStore())
 
-/** 主密码输入值 */
+const cloudStore = useCloudAccountStore()
+
+/** 邮箱（预填已绑定账户，软登出后仍记住） */
+const email = ref(cloudStore.email || '')
+/** 密码输入值 */
 const password = ref('')
 
-/** 提交主密码解锁 */
+/** 提交密码登录 */
 function handleUnlock() {
   if (loading.value) return
-  unlockByMasterPassword(password.value)
+  loginByPassword({ email: email.value, password: password.value })
 }
 
-/** 忘记主密码 → 跳转恢复码页面 */
+/** 忘记密码 → 跳转邮箱验证码重置页 */
 function handleForgotPassword() {
-  router.push({ name: 'RecoveryCode' })
+  router.push({ name: 'ResetPassword' })
 }
 </script>
 
@@ -54,26 +58,41 @@ function handleForgotPassword() {
         <div class="mp-page__logo">
           <AppIcon name="shield-solid" :width="26.667" :height="33.333" :color="'#ffffff'" />
         </div>
-        <h1 class="mp-page__title">请输入主密码解锁</h1>
-        <p class="mp-page__subtitle">验证身份以访问您的加密保管库</p>
+        <h1 class="mp-page__title">登录 SafeVault</h1>
+        <p class="mp-page__subtitle">登录云账户以访问您的加密保险库</p>
       </header>
 
       <!-- 中部表单 -->
       <section class="mp-page__form">
+        <!-- 邮箱 -->
+        <div class="mp-email">
+          <AppIcon name="mail" :size="18" class="mp-email__icon" aria-hidden="true" />
+          <input
+            v-model="email"
+            type="email"
+            class="mp-email__field"
+            placeholder="云账户邮箱"
+            autocomplete="email"
+            inputmode="email"
+            :disabled="loading"
+            aria-label="云账户邮箱"
+          />
+        </div>
+
         <PasswordInput
           v-model="password"
           :disabled="loading"
           @submit="handleUnlock"
         />
 
-        <!-- 立即解锁主按钮 -->
+        <!-- 登录主按钮 -->
         <button
           type="button"
           class="mp-unlock-btn"
           :disabled="loading"
           @click="handleUnlock"
         >
-          <span class="mp-unlock-btn__text">{{ loading ? '解锁中…' : '立即解锁' }}</span>
+          <span class="mp-unlock-btn__text">{{ loading ? '登录中…' : '登录' }}</span>
           <AppIcon v-if="!loading" name="arrow-right" :size="14" class="mp-unlock-btn__arrow" />
         </button>
       </section>
@@ -85,14 +104,14 @@ function handleForgotPassword() {
           type="button"
           class="mp-text-btn mp-text-btn--brand"
           :disabled="loading"
-          @click="unlockByBiometric"
+          @click="loginByBiometric"
         >
           <AppIcon name="fingerprint" :width="15" :height="17" />
-          <span>改用指纹解锁</span>
+          <span>改用指纹登录</span>
         </button>
 
         <button type="button" class="mp-text-btn mp-text-btn--link" @click="handleForgotPassword">
-          忘记主密码？
+          忘记密码？
         </button>
       </footer>
     </div>
@@ -202,7 +221,51 @@ function handleForgotPassword() {
   }
 }
 
-// 立即解锁 —— 主按钮
+// 邮箱输入（与主密码输入框 mp-input 同款视觉）
+.mp-email {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 56px;
+  background-color: $color-bg-input;
+  border: 2px solid transparent;
+  border-radius: $radius-md;
+  transition: border-color $transition-base;
+
+  &:focus-within {
+    border-color: $color-brand;
+  }
+
+  &__icon {
+    position: absolute;
+    left: $spacing-sm;
+    color: $color-text-muted;
+    pointer-events: none;
+  }
+
+  &__field {
+    @include button-reset;
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    padding: 0 $spacing-sm 0 44px; // 左让出邮箱图标
+    font-size: $font-size-input;
+    line-height: $line-height-body;
+    color: $color-text-strong;
+    cursor: text;
+
+    &::placeholder {
+      color: $color-text-muted;
+    }
+
+    &:disabled {
+      cursor: not-allowed;
+    }
+  }
+}
+
+// 登录 —— 主按钮
 .mp-unlock-btn {
   @include button-reset;
   @include flex-center;

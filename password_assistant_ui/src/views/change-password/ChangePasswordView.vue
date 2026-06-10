@@ -24,7 +24,7 @@ import { useChangePassword } from '@/composables/useChangePassword'
 import { useSheetDismiss } from '@/composables/useSheetDismiss'
 
 const router = useRouter()
-const { submitting, changeMasterPassword, generatePassword, cleanup } = useChangePassword()
+const { submitting, changePassword, generatePassword, cleanup } = useChangePassword()
 
 const newPassword = ref('')
 const confirmPassword = ref('')
@@ -75,7 +75,7 @@ function onGenerate() {
 /** 提交修改 */
 async function handleSubmit() {
   if (!canSubmit.value) return
-  const { ok } = await changeMasterPassword(newPassword.value)
+  const { ok } = await changePassword(newPassword.value)
   if (ok) {
     // 修改成功（toast 已由 composable 给出），返回设置页
     router.replace({ name: 'Settings' })
@@ -104,7 +104,7 @@ onUnmounted(cleanup)
           <AppIcon name="shield-lock" :width="18" :height="22" />
         </div>
         <p class="cpw-hero__desc">
-          身份已验证，请设置一个新的高强度主密码以保护您的保险库。
+          身份已验证，请设置一个新的高强度账户密码以保护您的保险库。
         </p>
       </section>
 
@@ -114,7 +114,7 @@ onUnmounted(cleanup)
         <div class="cpw-card__group">
           <PasswordField
             v-model="newPassword"
-            label="新主密码"
+            label="新密码"
             placeholder="请输入或一键生成"
             allow-generate
             :disabled="submitting"

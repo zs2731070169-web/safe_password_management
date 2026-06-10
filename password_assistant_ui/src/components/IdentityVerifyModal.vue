@@ -167,7 +167,7 @@ onBeforeUnmount(() => {
               :disabled="verifying"
               @click="switchMode('password')"
             >
-              使用主密码验证
+              使用账户密码验证
             </button>
 
             <div class="iv-modal__actions">
@@ -184,7 +184,7 @@ onBeforeUnmount(() => {
                 class="iv-input__field"
                 :type="showPassword ? 'text' : 'password'"
                 v-model="password"
-                placeholder="请输入主密码"
+                placeholder="请输入账户密码"
                 autocomplete="current-password"
                 :disabled="verifying"
                 @keydown.enter="onPasswordConfirm"

@@ -35,6 +35,14 @@ export default defineConfig({
   },
   server: {
     port: 5180,
-    open: true
+    open: true,
+    // 开发联调：把 /auth/* 反向代理到本地后端（默认 8000 端口），绕过浏览器跨域。
+    // 后端地址可经 VITE_DEV_API_TARGET 覆盖；生产 / APK 改用 VITE_API_BASE_URL 直连（见 services/http.js）。
+    proxy: {
+      '/auth': {
+        target: process.env.VITE_DEV_API_TARGET || 'http://localhost:8000',
+        changeOrigin: true
+      }
+    }
   }
 })

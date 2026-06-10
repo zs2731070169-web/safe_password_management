@@ -1,15 +1,12 @@
 <script setup>
 /**
- * ResetPasswordView —— 找回访问权限·步骤 2/2：重设主密码
+ * ResetPasswordView —— 忘记密码：邮箱验证码重置账户密码（单页）
  *
- * 像素级还原 Figma「找回访问权限-重设主密码」(node 1:263)。
- * 结构（自上而下）：
- *   1. 顶部导航：返回 + 标题「重设主密码」+ 右侧盾牌
- *   2. 状态区：绿色成功徽章 +「步骤 2/2」进度条 + 说明
- *   3. 安全卡片：新主密码（含强度计）+ 确认密码 + 安全建议
- *   4. 底部毛玻璃操作栏：「完成并进入」（两次密码一致方可提交）
+ * 统一身份后找回改为邮箱验证码重置（不再有恢复码）。用户从登录页「忘记密码？」进入：
+ *   填邮箱（预填已记住账户）→ 发送验证码 → 输验证码 + 新密码 → 重置成功即登录进入密码库。
  *
- * 交互编排复用 useResetPassword：模拟重置延迟，成功后标记已解锁并进入密码库。
+ * 结构（自上而下）：顶栏 → 状态区（绿盾 + 说明）→ 安全卡片（邮箱 + 验证码 + 新密码 +
+ *   强度计 + 确认 + 安全建议）→ 底部毛玻璃操作栏。交互编排复用 useCloudAccount。
  */
 import { ref, computed, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
@@ -19,43 +16,84 @@ import ResetPasswordHeader from './components/ResetPasswordHeader.vue'
 import PasswordField from '@/components/PasswordField.vue'
 import PasswordStrength from '@/components/PasswordStrength.vue'
 
-import { useResetPassword } from '@/composables/useResetPassword'
-import { useAuthStore } from '@/stores/auth'
+import { useCloudAccount } from '@/composables/useCloudAccount'
+import { useCloudAccountStore } from '@/stores/cloudAccount'
 
 const router = useRouter()
-const authStore = useAuthStore()
-const { resetting, resetMasterPassword, cleanup } = useResetPassword()
+const cloudStore = useCloudAccountStore()
+const { sendingCode, authenticating, sendCode, resetPassword, cleanup } = useCloudAccount()
 
+/** 邮箱（预填已绑定账户，便于直接发码） */
+const email = ref(cloudStore.email || '')
+const code = ref('')
 const newPassword = ref('')
 const confirmPassword = ref('')
+
+/** 重发验证码倒计时（秒） */
+const countdown = ref(0)
+let countdownTimer = null
 
 /** 两次输入不一致（确认框已输入时才提示） */
 const mismatch = computed(
   () => confirmPassword.value.length > 0 && confirmPassword.value !== newPassword.value
 )
 
-/** 可提交：两次均非空且一致，且非提交中 */
+/** 发送验证码按钮文案 */
+const sendCodeText = computed(() => {
+  if (countdown.value > 0) return `${countdown.value}s 后重发`
+  if (sendingCode.value) return '发送中…'
+  return '发送验证码'
+})
+
+/** 可提交：邮箱 / 验证码 / 两次新密码均已填且一致，且非提交中 */
 const canSubmit = computed(
   () =>
+    email.value.length > 0 &&
+    code.value.length > 0 &&
     newPassword.value.length > 0 &&
     confirmPassword.value.length > 0 &&
     newPassword.value === confirmPassword.value &&
-    !resetting.value
+    !authenticating.value
 )
 
-/** 提交重置 */
+function startCountdown() {
+  clearCountdown()
+  countdown.value = 60
+  countdownTimer = setInterval(() => {
+    countdown.value -= 1
+    if (countdown.value <= 0) clearCountdown()
+  }, 1000)
+}
+
+function clearCountdown() {
+  if (countdownTimer) {
+    clearInterval(countdownTimer)
+    countdownTimer = null
+  }
+  countdown.value = 0
+}
+
+/** 发送验证码：成功后进入倒计时 */
+async function onSendCode() {
+  if (countdown.value > 0 || sendingCode.value) return
+  const ok = await sendCode(email.value.trim())
+  if (ok) startCountdown()
+}
+
+/** 提交重置：成功即登录进入密码库 */
 async function handleSubmit() {
   if (!canSubmit.value) return
-  const ok = await resetMasterPassword(newPassword.value)
+  const ok = await resetPassword({ code: code.value.trim(), newPassword: newPassword.value })
   if (ok) {
-    // 身份已通过恢复码确认，重置成功即视为已解锁，直接进入密码库
-    authStore.markUnlocked()
+    cloudStore.markLoggedIn()
     router.replace({ name: 'Vault' })
   }
 }
 
-// 离开页面时取消未完成的重置请求
-onUnmounted(cleanup)
+onUnmounted(() => {
+  clearCountdown()
+  cleanup()
+})
 </script>
 
 <template>
@@ -68,25 +106,61 @@ onUnmounted(cleanup)
         <div class="reset-status__badge">
           <AppIcon name="shield-check" :width="20" :height="25" />
         </div>
-        <div class="reset-status__progress">
-          <span class="reset-status__step">步骤 2/2</span>
-          <span class="reset-status__bars">
-            <span class="reset-status__bar"></span>
-            <span class="reset-status__bar"></span>
-          </span>
-        </div>
-        <p class="reset-status__desc">请设置一个新的高强度主密码以保护您的保险库</p>
+        <h1 class="reset-status__title">重置密码</h1>
+        <p class="reset-status__desc">通过邮箱验证码重置账户密码，重置后即可登录</p>
       </div>
 
       <!-- 安全卡片 -->
       <section class="reset-card">
-        <!-- 新主密码 + 强度计 -->
+        <!-- 邮箱 -->
+        <div class="acc-field">
+          <label class="acc-field__label">邮箱</label>
+          <div class="acc-field__control">
+            <AppIcon name="mail" :size="18" class="acc-field__icon" />
+            <input
+              class="acc-field__input acc-field__input--with-icon"
+              type="email"
+              v-model="email"
+              placeholder="you@example.com"
+              autocomplete="email"
+              inputmode="email"
+              :disabled="authenticating"
+            />
+          </div>
+        </div>
+
+        <!-- 邮箱验证码 -->
+        <div class="acc-field">
+          <label class="acc-field__label">邮箱验证码</label>
+          <div class="acc-field__control">
+            <input
+              class="acc-field__input acc-field__input--with-send"
+              type="text"
+              v-model="code"
+              placeholder="6 位验证码"
+              inputmode="numeric"
+              maxlength="6"
+              autocomplete="one-time-code"
+              :disabled="authenticating"
+            />
+            <button
+              type="button"
+              class="acc-field__send"
+              :disabled="!email || sendingCode || countdown > 0 || authenticating"
+              @click="onSendCode"
+            >
+              {{ sendCodeText }}
+            </button>
+          </div>
+        </div>
+
+        <!-- 新密码 + 强度计 -->
         <div class="reset-card__group">
           <PasswordField
             v-model="newPassword"
-            label="新主密码"
+            label="新密码"
             placeholder="请输入高强度密码"
-            :disabled="resetting"
+            :disabled="authenticating"
             @submit="handleSubmit"
           />
           <PasswordStrength :password="newPassword" />
@@ -99,7 +173,7 @@ onUnmounted(cleanup)
           placeholder="再次输入新密码"
           :error="mismatch"
           error-text="两次输入的密码不一致"
-          :disabled="resetting"
+          :disabled="authenticating"
           @submit="handleSubmit"
         />
 
@@ -121,8 +195,8 @@ onUnmounted(cleanup)
         :disabled="!canSubmit"
         @click="handleSubmit"
       >
-        <span>{{ resetting ? '重置中…' : '完成并进入' }}</span>
-        <AppIcon v-if="!resetting" name="login" :size="18" class="reset-submit__icon" />
+        <span>{{ authenticating ? '重置中…' : '重置并登录' }}</span>
+        <AppIcon v-if="!authenticating" name="login" :size="18" class="reset-submit__icon" />
       </button>
     </footer>
   </div>
@@ -173,33 +247,13 @@ onUnmounted(cleanup)
     color: $color-health-text; // 盾牌图标跟随
   }
 
-  // 步骤指示 + 进度条
-  &__progress {
-    display: flex;
-    align-items: center;
-    gap: $spacing-xs; // 8px
-    margin-bottom: $spacing-xs; // 8px
-  }
-
-  &__step {
-    font-family: $font-family-mono;
-    font-size: $font-size-caption; // 12px
-    font-weight: $font-weight-bold;
-    line-height: $line-height-caption;
-    letter-spacing: $letter-spacing-caption;
-    color: $color-brand;
-  }
-
-  &__bars {
-    display: flex;
-    gap: $spacing-xxs; // 4px
-  }
-
-  &__bar {
-    width: 32px;
-    height: 4px;
-    background-color: $color-brand; // 两段全亮 = 已到末步
-    border-radius: $radius-pill;
+  &__title {
+    margin-top: $spacing-xs; // 8px
+    font-size: $font-size-heading; // 20px
+    font-weight: $font-weight-medium;
+    line-height: $line-height-heading;
+    color: $color-text-strong;
+    text-align: center;
   }
 
   &__desc {
@@ -217,7 +271,7 @@ onUnmounted(cleanup)
   flex-direction: column;
   gap: $spacing-lg; // 字段之间 24px
   width: 100%;
-  padding: $spacing-sm; // 16px（设计 17px，取栅格值）
+  padding: $spacing-sm; // 16px
   background-color: $color-bg-card;
   border: 1px solid rgba($line-base, 0.3);
   border-radius: $radius-md;
@@ -250,6 +304,110 @@ onUnmounted(cleanup)
     font-size: $font-size-sm; // 14px
     line-height: $line-height-sm;
     color: $color-text-regular;
+  }
+}
+
+// ---- 邮箱 / 验证码字段（与开户页同款输入视觉）----
+.acc-field {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-xs;
+  width: 100%;
+
+  &__label {
+    font-size: $font-size-caption; // 12px
+    font-weight: $font-weight-medium;
+    line-height: $line-height-caption;
+    letter-spacing: $letter-spacing-caption;
+    color: $color-text-regular;
+  }
+
+  &__control {
+    position: relative;
+    width: 100%;
+  }
+
+  &__icon {
+    position: absolute;
+    top: 50%;
+    left: $spacing-sm;
+    transform: translateY(-50%);
+    color: $color-text-muted;
+    pointer-events: none;
+  }
+
+  &__input {
+    @include button-reset;
+    width: 100%;
+    height: 56px;
+    padding: 0 $spacing-sm;
+    background-color: $color-bg-input;
+    border: 1px solid $color-border;
+    border-radius: $radius-sm;
+    font-size: $font-size-input; // 18px
+    color: $color-text-strong;
+    cursor: text;
+    transition:
+      border-color $transition-base,
+      box-shadow $transition-base;
+
+    &::placeholder {
+      color: $color-text-muted;
+    }
+
+    &:focus {
+      border-color: $color-brand;
+      box-shadow: 0 0 0 3px rgba($color-brand, 0.12);
+    }
+
+    &:disabled {
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+
+    &--with-icon {
+      padding-left: 44px;
+    }
+
+    &--with-send {
+      padding-right: 116px;
+    }
+  }
+
+  &__send {
+    @include button-reset;
+    @include flex-center;
+    position: absolute;
+    top: 50%;
+    right: $spacing-xs;
+    transform: translateY(-50%);
+    height: 40px;
+    padding: 0 $spacing-xs;
+    border-radius: $radius-sm;
+    background-color: rgba($color-link, 0.1);
+    font-size: $font-size-sm;
+    line-height: $line-height-sm;
+    white-space: nowrap;
+    color: $color-link;
+    transition:
+      background-color $transition-base,
+      color $transition-base,
+      opacity $transition-base;
+
+    &:hover:not(:disabled) {
+      background-color: rgba($color-link, 0.16);
+    }
+
+    &:disabled {
+      color: $color-text-placeholder;
+      background-color: transparent;
+      cursor: not-allowed;
+    }
+
+    &:focus-visible {
+      outline: 2px solid rgba($color-brand, 0.4);
+      outline-offset: 1px;
+    }
   }
 }
 

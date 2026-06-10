@@ -1,20 +1,20 @@
 /**
  * useIdentityVerify —— 敏感操作前的身份验证编排
  *
- * 通用「指纹 / 主密码」二选一验证：
- *   - 指纹：复用 services/biometric 的 scanBiometric，与登录解锁走完全相同的路径——
+ * 通用「指纹 / 账户密码」二选一验证：
+ *   - 指纹：复用 services/biometric 的 scanBiometric，与登录走完全相同的路径——
  *     真机拉起系统指纹框，浏览器/无插件降级 mock 延时；
- *   - 主密码：走 auth store 校验（比对开户时持久化的主密码，不改变解锁态）。
+ *   - 账户密码：走 cloudAccount store 校验（比对当前云账户密码，不改变登录态）。
  * 任一方式通过即视为验证成功。沿用 AbortController 在卸载 / 关闭时取消进行中的请求。
  *
- * 复用方：删除条目（详情页）、重新生成恢复码（恢复码管理页）等。
+ * 复用方：删除条目（详情页）、修改账户密码（设置页）等。
  */
 import { ref } from 'vue'
-import { useAuthStore } from '@/stores/auth'
+import { useCloudAccountStore } from '@/stores/cloudAccount'
 import { scanBiometric } from '@/services/biometric'
 
 export function useIdentityVerify() {
-  const authStore = useAuthStore()
+  const cloudStore = useCloudAccountStore()
 
   /** 验证中标志 */
   const verifying = ref(false)
@@ -36,15 +36,15 @@ export function useIdentityVerify() {
     })
   }
 
-  /** 主密码验证 */
+  /** 账户密码验证 */
   async function verifyByPassword(password) {
     if (!password) {
-      errorMsg.value = '请输入主密码'
+      errorMsg.value = '请输入密码'
       return false
     }
     return run('password', async (signal) => {
-      const ok = await authStore.verifyMasterPassword(password, { signal })
-      if (!ok) throw new Error('主密码不正确')
+      const ok = await cloudStore.verifyPassword(password, { signal })
+      if (!ok) throw new Error('密码不正确')
     })
   }
 

@@ -2,39 +2,27 @@
  * useSettings —— 设置页交互编排
  *
  * 转发设置项的读写到 settings store，并承接各类交互反馈：
+ *   - 云账户：顶部卡片展示（邮箱 / 登录态）+ 底部退出登录（软登出，回登录页）；
  *   - 生物识别解锁：开启需录入指纹、关闭需先验证指纹通过（toggleBiometric，复用全局指纹弹窗）；
- *   - 其余布尔开关（账号脱敏）：直接切换并持久化；
+ *   - 其余布尔开关（账号脱敏 / 云备份）：直接切换并持久化；
  *   - 自动锁定时长：行项就地展开下拉框（SettingItem 自绘浮层），点选某项即调用 setAutoLock 回填；
- *   - 预留功能项（修改主密码 / 恢复码管理 / 加密导出导入 / 回收站）：统一 ElMessage.info 占位。
+ *   - 修改账户密码：前置身份验证（指纹 / 账户密码），通过后跳转；加密导出导入：占位提示。
  *
- * 视图只调用本组合式函数，不直接触碰 store / 弹窗（与 useGenerator、useResetPassword 等保持一致）。
+ * 视图只调用本组合式函数，不直接触碰 store / 弹窗（与 useGenerator 等保持一致）。
  * main.js 已引入 el-message 样式，可直接用 ElMessage。
  */
-import { computed, ref, reactive } from 'vue'
+import { computed, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ElMessage } from 'element-plus'
 
 import { useSettingsStore, AUTO_LOCK_OPTIONS } from '@/stores/settings'
+import { useCloudAccountStore } from '@/stores/cloudAccount'
 import { useBiometricPrompt } from '@/composables/useBiometricPrompt'
 
-/**
- * @returns {{
- *   biometric: import('vue').Ref<boolean>,
- *   maskAccount: import('vue').Ref<boolean>,
- *   cloudBackup: import('vue').Ref<boolean>,
- *   autoLockSeconds: import('vue').Ref<number>,
- *   trashCount: import('vue').Ref<number>,
- *   autoLockOptions: Array<{ value: number, label: string }>,
- *   autoLockLabel: import('vue').ComputedRef<string>,
- *   toggleSwitch: (key: string) => void,
- *   toggleBiometric: () => Promise<void>,
- *   setAutoLock: (seconds: number) => void,
- *   placeholder: (label: string) => void
- * }}
- */
 export function useSettings() {
   const store = useSettingsStore()
+  const cloudStore = useCloudAccountStore()
   const router = useRouter()
   const { requestBiometric } = useBiometricPrompt()
   const {
@@ -44,6 +32,8 @@ export function useSettings() {
     cloudBackup,
     trashCount
   } = storeToRefs(store)
+  // 云账户状态：登录态与脱敏邮箱（供顶部账户卡片与退出登录使用）
+  const { loggedIn: cloudLoggedIn, maskedEmail: cloudEmail } = storeToRefs(cloudStore)
 
   /** 当前自动锁定时长对应的展示文案（行项右侧值） */
   const autoLockLabel = computed(
@@ -86,32 +76,39 @@ export function useSettings() {
   }
 
   /**
-   * 预留功能项占位提示（修改主密码 / 加密导出导入）。
+   * 预留功能项占位提示（加密导出导入）。
    * @param {string} label 功能名（用于提示文案）
    */
   function placeholder(label) {
     ElMessage.info(`${label}功能正在开发中`)
   }
 
+  /** 退出登录（软登出）：清会话、保留账户绑定，回登录页。二次确认由视图 ConfirmSheet 负责。 */
+  function logout() {
+    cloudStore.logout()
+    ElMessage.success('已退出登录')
+    router.replace({ name: 'Unlock' })
+  }
+
   // ---- 敏感页前置身份验证（在设置页就地完成，验证通过才跳转）----
   // 这样取消时不发生路由跳转，避免「先滑入空白页、取消后再滑回」的白屏间隔。
-  /** 主密码兜底验证弹窗状态（仅未开启指纹时使用；标题/提示随目标功能切换） */
+  /** 账户密码兜底验证弹窗状态（仅未开启指纹时使用；标题/提示随目标功能切换） */
   const verify = reactive({ visible: false, title: '', hint: '' })
-  /** 当前等待中的验证 Promise 决议器（主密码弹窗路径用） */
+  /** 当前等待中的验证 Promise 决议器（密码弹窗路径用） */
   let verifyResolve = null
 
   /**
    * 前置身份验证（与「生物识别解锁」设置一致，单一方式不混用）：
    *   已开启指纹 → 拉起系统指纹框，返回是否通过；
-   *   未开启指纹 → 打开主密码兜底弹窗，等待用户验证 / 取消。
-   * @param {{ title: string, hint: string }} opts 主密码弹窗文案
+   *   未开启指纹 → 打开账户密码兜底弹窗，等待用户验证 / 取消。
+   * @param {{ title: string, hint: string }} opts 密码弹窗文案
    * @returns {Promise<boolean>} 是否通过
    */
   async function requireIdentity({ title, hint }) {
     if (biometric.value) {
       return requestBiometric('verify')
     }
-    // 主密码路径：打开弹窗并等待结果
+    // 密码路径：打开弹窗并等待结果
     verify.title = title
     verify.hint = hint
     verify.visible = true
@@ -120,14 +117,14 @@ export function useSettings() {
     })
   }
 
-  /** 主密码弹窗验证通过 */
+  /** 密码弹窗验证通过 */
   function onIdentityVerified() {
     verify.visible = false
     verifyResolve?.(true)
     verifyResolve = null
   }
 
-  /** 主密码弹窗显隐变更：被关闭（取消 / ESC / 遮罩）即视为未通过 */
+  /** 密码弹窗显隐变更：被关闭（取消 / ESC / 遮罩）即视为未通过 */
   function onIdentityVisibleChange(val) {
     verify.visible = val
     if (!val && verifyResolve) {
@@ -136,22 +133,13 @@ export function useSettings() {
     }
   }
 
-  /** 进入修改主密码页（验证通过后跳转） */
+  /** 进入修改账户密码页（验证通过后跳转） */
   async function openChangePassword() {
     const ok = await requireIdentity({
-      title: '验证身份以修改主密码',
-      hint: '修改后请牢记新主密码，旧密码将立即失效。'
+      title: '验证身份以修改账户密码',
+      hint: '修改后请牢记新密码，旧密码将立即失效。'
     })
     if (ok) router.push({ name: 'ChangeMasterPassword' })
-  }
-
-  /** 进入恢复码管理（重新生成并保存）页（验证通过后跳转） */
-  async function openRecoveryCode() {
-    const ok = await requireIdentity({
-      title: '验证身份以管理恢复码',
-      hint: '重新生成后旧恢复码将立即失效，请确认本人操作。'
-    })
-    if (ok) router.push({ name: 'RecoveryCodeManage' })
   }
 
   /** 进入回收站页 */
@@ -168,15 +156,18 @@ export function useSettings() {
     trashCount,
     autoLockOptions: AUTO_LOCK_OPTIONS,
     autoLockLabel,
+    // 云账户卡片状态
+    cloudLoggedIn,
+    cloudEmail,
     // 方法
     toggleSwitch,
     toggleBiometric,
     setAutoLock,
     placeholder,
     openChangePassword,
-    openRecoveryCode,
     openTrash,
-    // 前置身份验证（主密码兜底弹窗）状态与回调
+    logout,
+    // 前置身份验证（账户密码兜底弹窗）状态与回调
     verify,
     onIdentityVerified,
     onIdentityVisibleChange

@@ -1,10 +1,9 @@
 <script setup>
 /**
- * 主密码输入框
+ * 账户密码输入框
  *
- * 还原 Figma node 1:545（Password Input Group）：
- *   浅蓝填充圆角输入框，左侧锁图标，右侧显示/隐藏密码切换按钮。
- * 通过 v-model 双向绑定密码，回车触发 submit 事件交由父级解锁。
+ * 浅蓝填充圆角输入框，左侧锁图标，右侧显示/隐藏密码切换按钮。
+ * 通过 v-model 双向绑定密码，回车触发 submit 事件交由父级登录。
  */
 import { ref } from 'vue'
 import AppIcon from '@/components/icons/AppIcon.vue'
@@ -49,11 +48,11 @@ function toggleVisible() {
       v-model="model"
       :type="visible ? 'text' : 'password'"
       class="mp-input__field"
-      placeholder="主密码"
+      placeholder="账户密码"
       autocomplete="current-password"
       :disabled="disabled"
       enterkeyhint="go"
-      aria-label="主密码"
+      aria-label="账户密码"
       @keyup.enter="emit('submit')"
     />
 
