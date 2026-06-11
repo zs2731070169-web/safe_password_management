@@ -1,0 +1,74 @@
+# 本地联调基础设施：MySQL + Redis + RabbitMQ
+# 启动：docker compose up -d
+# MySQL：localhost:3306（safevault / safevault，库名 safevault；root 密码 root）
+# RabbitMQ 管理台：http://localhost:15672 （默认 guest / guest）
+
+services:
+  # 持久化主库：云账户与认证（模块 1）、加密备份 blob（模块 2）、恢复凭据（模块 3 C2）
+  mysql:
+    image: mysql:8.4
+    container_name: safevault-mysql
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: safevault
+      MYSQL_USER: safevault
+      MYSQL_PASSWORD: safevault
+      TZ: Asia/Shanghai
+    # 统一 utf8mb4，避免 emoji / 多语种乱码；密文 blob 与邮箱均安全存储
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      # 库就绪才算健康，便于 app / 建表脚本依赖等待
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u safevault -psafevault --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: safevault-redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: safevault-rabbitmq
+    ports:
+      - "5672:5672"     # AMQP 协议端口
+      - "15672:15672"   # 管理台 Web 端口
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    restart: unless-stopped
+
+  minio:
+    image: quay.io/minio/minio
+    container_name: safevault-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    restart: unless-stopped
+
+volumes:
+  mysql-data:
+  redis-data:
+  rabbitmq-data:
+  minio-data:

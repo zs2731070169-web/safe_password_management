@@ -31,12 +31,15 @@
 | （本地校验，亦可后端化） | `verifyPassword(password)` | 敏感操作二次确认（改密 / 删除等进入页时） |
 | `POST /auth/change-password` | `changePassword(newPassword)` | 设置页「修改账户密码」 |
 | `POST /auth/reset-password` | `resetPassword({ code, newPassword })` | 忘记密码：邮箱验证码重置 |
+| `POST /auth/logout` | `logout()` | 设置页 / 账户卡片「退出登录」：吊销后端会话并清本地密钥 |
 
 要点：
 
 - **身份与云备份解耦**：开户即建账户，不等到「开启云备份」。云备份开关（`settings.cloudBackup`）此后只决定**是否把加密 blob 推上云**，不再承担「首次建立身份」职责。
 - **会话不持久化**：`loggedIn` 启动恒为 `false`，每次冷启动须重新登录（密码或指纹）——后端 token 也应按此设计（refresh token 可留存，access token 短时效）。
 - **路由守卫两闸**（`router/index.js`）：①`!hasAccount` → 强制 `Onboarding`（创建账户）；②`requiresUnlock && !loggedIn` → 回 `Unlock`（登录）。后端无需感知，但接口语义须支撑这两态。
+- **登出（logout）≠ 锁定（lock）**：二者都清会话内存中的密钥并令 `loggedIn = false`、触发守卫②回 `Unlock`，但范围不同——**lock（自动锁定）只清会话密钥，保留后端会话**：refresh token 仍有效、本地仍留存，下次用密码 / 指纹可**快速重登**（无需重走 `/auth/login` 的密码验证）；**logout（退出登录）则连后端会话一并吊销**：调 `POST /auth/logout` 把该 refresh token 从 Redis 白名单 `SREM` 移除使其即时失效，并清除本地保存的 refresh token，下次**必须重新走 `/auth/login`**。logout 全程仍不接触任何明文 / 密钥，**不破坏零知识**——后端只删白名单条目，不触达 MasterKey / DataKey。
+- **登出失败兜底（本地优先）**：`POST /auth/logout` 网络失败时，客户端**仍应本地完成登出**（清会话密钥 + 清本地 refresh token + 回登录页），保证本地登出即时生效；后端那条未及移除的白名单项可由 refresh token 自身的 30 天 TTL 自然过期兜底，不会造成长期残留。access token 因短时效（如 15min）让其自然过期即可；如需即时失效可选将其 jti 加入黑名单（本设计不展开）。
 
 ### 模块 2：加密备份 blob 存储（核心，唯一真正的业务后端）
 
@@ -123,7 +126,8 @@
 1. **`stores/cloudAccount.js`** — 文件末尾 mock 区（`mockSendVerifyCode` / `mockRegister` / `mockLogin` / `mockVerifyPassword` / `mockChangePassword` / `mockResetPassword` / `mockRefresh`）改为：
    - 调后端 `/auth/*`；
    - 本地不再留明文密码（`safevault.cloud` 改存 refresh token + KDF 盐，密码仅在内存中用于派生 MasterKey）；
-   - `login` / `register` 成功后派生并缓存 MasterKey（会话内存），`lock` / `logout` 时清除。
+   - `login` / `register` 成功后派生并缓存 MasterKey（会话内存）；`lock`（自动锁定）时**仅清除会话密钥**（MasterKey / DataKey）并置 `loggedIn = false`，**保留 refresh token**（下次快速重登）；
+   - `logout`（退出登录）需从当前「`logout = lock` 别名」升级为**真正的对外动作**（仍遵循「只改 mock 区、对外签名稳定」约定）：先调 `POST /auth/logout`（带 `Authorization: Bearer access` 与待吊销的 `refreshToken`）令后端会话即时失效，再清会话密钥**与本地持久化的 refresh token**（`safevault.cloud` 中的 `refreshToken`），最后置 `loggedIn = false` 回登录页；网络失败时**仍本地完成上述清理**（本地登出优先，后端白名单项靠 TTL 自然过期兜底）。
 2. **`stores/vault.js`** — `addEntry` / `updateEntry` / `deleteEntry` / `restoreEntry` / `purgeEntry` / `emptyTrash` 成功后发「库已变更」事件；新建 `composables/useCloudBackup.js` 监听，若 `settings.cloudBackup` 为真则 debounce 后 `PUT /backup`（快照含回收站，见决策点 B）。
 3. **导入功能尚不存在** — 设置页「加密导出 / 导入备份」目前是 `placeholder()` 占位（`SettingsView.vue` 第 90 行、`composables/useSettings.js`），**需前后端一起新建**：解析导入文件 → 批量写入 vault → 触发一次备份。
 4. **忘记密码** — `resetPassword` 真实接入按决策点 C 处理：C1 在重置成功后清空云端 blob 并提示；C2 需把最小化的「恢复凭据」录入 / 校验 UI 加回（开户时生成、找回时输入）。
@@ -158,6 +162,7 @@
 | 认证 | POST | `/auth/refresh` | — |
 | 认证 | POST | `/auth/change-password` | — |
 | 认证 | POST | `/auth/reset-password` | — |
+| 认证 | POST | `/auth/logout` | — |
 | 备份 | PUT | `/backup` | ✅ |
 | 备份 | GET | `/backup` | ✅ |
 | 备份 | GET | `/backup/meta` | 元信息（无密码内容） |

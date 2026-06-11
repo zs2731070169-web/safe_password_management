@@ -1,0 +1,53 @@
+[project]
+name = "safevault"
+version = "1.0.0"
+description = "SafeVault 模块 1：云账户与认证后端（当前实现下发邮箱验证码）"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    # Web 框架与服务器
+    "fastapi>=0.115.6",
+    "uvicorn[standard]>=0.34.0",
+    # 配置与校验
+    "pydantic>=2.10.4",
+    "pydantic-settings>=2.7.1",
+    "email-validator>=2.2.0",       # 提供 pydantic EmailStr 邮箱格式校验
+    # MySQL（SQLAlchemy 2.0 异步 ORM + asyncmy 驱动）
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncmy>=0.2.9",
+    # Redis（异步客户端，验证码 / 冷却 / 限流）
+    "redis>=5.2.1",
+    # S3 兼容对象存储（模块2 加密备份 blob 存储）：默认连自建 MinIO，亦可直接连
+    # Cloudflare R2 / Backblaze B2 / AWS S3（同步 SDK，async 链路里用 anyio.to_thread 包裹）
+    "boto3>=1.43.27",
+    # 把同步阻塞调用（boto3）丢到线程池执行，避免阻塞事件循环（FastAPI/Starlette 已依赖，显式声明）
+    "anyio>=4.6.0",
+    # RabbitMQ（异步生产者 / 消费者）
+    "aio-pika>=9.5.4",
+    # Brevo 事务邮件 HTTP API 调用（运行时发信；测试 TestClient 亦复用 httpx）
+    "httpx>=0.28.1",
+    "pyjwt>=2.13.0",
+]
+
+[dependency-groups]
+# 开发/联调依赖：uv sync 默认安装；生产部署用 `uv sync --no-dev` 跳过
+# httpx 已上提为运行时依赖（Brevo 发信），测试 TestClient 直接复用，无需在此重复声明
+dev = [
+    "pytest>=8.3.4",
+    "pytest-asyncio>=0.25.2",   # async 测试用例支持（asyncio_mode=auto）
+    "aiosqlite>=0.20.0",        # 测试用内存 SQLite 异步驱动，替代 MySQL 验证真实落库
+    "fakeredis>=2.26.2",        # 内存 Redis 替身，验证 refresh 白名单 / tokenver 缓存的真实读写
+]
+
+[tool.uv]
+# 本工程是应用而非可发布的库：app / worker 以源码目录形式从工程根运行，
+# 不需要把根目录当作可安装包构建。
+package = false
+
+[tool.pytest.ini_options]
+# 测试从工程根运行：把 app/ 加入 import 路径，使 `from services...` 等绝对导入生效
+# （与运行时一致：app/ 为源码根，不走包安装）。
+pythonpath = ["app"]
+testpaths = ["tests"]
+# asyncio_mode=auto：async def 测试函数无需逐个标 @pytest.mark.asyncio
+asyncio_mode = "auto"

@@ -280,6 +280,47 @@ sequenceDiagram
 
 ---
 
+## 7. 退出登录 `POST /auth/logout`
+
+设置页 / 账户卡片「退出登录」发起。与**自动锁定（lock）**的关键区别：lock 只清会话内存中的密钥、**保留后端会话**（refresh token 仍有效，下次密码 / 指纹可快速重登）；**logout 则连后端会话一并吊销**——把该 refresh token 从 Redis 白名单 `SREM` 移除使其即时失效，下次必须重新走 §3 `/auth/login`。access token 因短时效让其自然过期即可（如需即时失效可选加入黑名单，本图不展开）。
+
+> **零知识不受影响**：logout 全程后端只删 Redis 白名单条目，**不接触任何明文 / 密钥**。
+> **失败兜底（本地优先）**：网络失败时客户端**仍本地完成登出**（清会话密钥 + 清本地 refresh token + 回登录页）；后端那条未及移除的白名单项由 refresh token 的 TTL（如 30d）自然过期兜底。logout 主要走 Token 服务 + Redis，不经认证服务与用户库。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor App as 📱 客户端
+    participant GW as 🚪 API 网关
+    participant Token as 🎫 Token 服务
+    participant Cache as ⚡ Redis
+
+    App->>GW: POST /auth/logout<br/>Authorization: Bearer access<br/>{ refreshToken }
+    GW->>GW: 校验 access token（未过期）
+    alt access 无效 / 已过期
+        GW-->>App: 401
+        Note over App: 本地兜底：仍清会话密钥 + 本地 refresh token → 回 /unlock
+    else 有效
+        GW->>Token: 转发（带 userId + refreshToken）
+        Token->>Token: 校验 refresh 签名，解出 jti
+        Token->>Cache: SISMEMBER 白名单 refresh:{userId}
+        alt 在白名单（会话有效）
+            Cache-->>Token: 存在
+            Token->>Cache: SREM refresh:{userId}（吊销该会话，即时失效）
+            Note right of Token: access 短时效，自然过期<br/>（如需即时失效可选加黑名单）
+            Token-->>GW: 200 { success: true }
+            GW-->>App: 200「已退出登录」
+        else 不在白名单（已登出 / 已轮转）
+            Cache-->>Token: 不存在
+            Token-->>GW: 200 { success: true }（幂等：重复登出视为成功）
+            GW-->>App: 200
+        end
+    end
+    Note over App: 清会话内存 MasterKey / DataKey + 清本地 refresh token<br/>loggedIn = false → 守卫 requiresUnlock && !loggedIn 拦回 /unlock
+```
+
+---
+
 ## 附：流程 ↔ 接口 ↔ 后端关键交互对照
 
 | 时序图 | 接口 | 关键后端交互链路 |
@@ -290,4 +331,4 @@ sequenceDiagram
 | §4 续签 | `POST /auth/refresh` | refresh 白名单校验 → 轮转作废 → 签发新对 |
 | §5 改密 | `POST /auth/change-password` | access 鉴权 → 更新 verifier → 吊销旧会话 |
 | §6 重置 | `POST /auth/reset-password` | 校验码 → 更新 verifier → 全量吊销 → 决策点 C 处理云 blob |
-```
+| §7 登出 | `POST /auth/logout` | access 鉴权 → Redis SREM refresh 白名单 → 本地清密钥 |
