@@ -4,16 +4,27 @@
  * 用原生 fetch 封装，统一处理：基地址拼接、JSON 序列化、AbortSignal 取消、
  * 以及把后端错误体里的 `detail` 抽成可直接展示的中文 Error.message。
  *
+ * 后端统一挂在 `/safevault` 根下（认证 /safevault/auth/*、加密备份 /safevault/backup*）。
+ * 各调用方仍传相对接口路径（如 /auth/verify-code、/backup），本文件统一拼上这一根前缀，
+ * 故 dev 与生产环境的「单一根地址」保持一致，调用方无需感知。
+ *
  * 基地址来源（按优先级）：
  *   - 构建期注入的 VITE_API_BASE_URL（生产 / Capacitor APK 直连后端，如 https://api.example.com）；
- *   - 缺省为空串，走同源相对路径 —— 开发期由 Vite proxy 把 /auth/* 转发到本地后端（见 vite.config.js）。
+ *   - 缺省为空串，走同源相对路径 —— 开发期由 Vite proxy 把 /safevault/* 转发到本地后端（见 vite.config.js）。
+ * 无论何种来源，最终都会再拼上 API_ROOT(/safevault) 作为统一根。
  *
  * 与 services/ 下其它封装（biometric / clipboard）一致：视图与 store 不直接碰 fetch，
  * 只调用这里的语义化方法；后端联调细节变化时只动本文件。
  */
 
-/** 后端基地址：生产经环境变量注入，开发留空走 Vite proxy */
-const BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
+/** 后端统一根地址段：所有接口路径都挂在它下面，dev 走 Vite proxy、生产随基地址直连。 */
+const API_ROOT = '/safevault'
+
+/**
+ * 后端基地址 = (生产经环境变量注入的源站 || 开发留空走同源 proxy) + 统一根 /safevault。
+ * 生产仅需配置源站（如 https://api.example.com），无需在环境变量里重复带 /safevault。
+ */
+const BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '') + API_ROOT
 
 /**
  * 从后端错误响应里提取一句可展示的中文提示。
@@ -60,6 +71,51 @@ async function sendJson(method, path, body, { signal, headers } = {}) {
       // 又允许调用方按需补充（如 Authorization）；保持向后兼容（不传 headers 行为不变）。
       headers: { 'Content-Type': 'application/json', ...headers },
       body: JSON.stringify(body),
+      signal
+    })
+  } catch (err) {
+    // 取消异常原样透传，交由上层识别 AbortError 静默处理
+    if (err?.name === 'AbortError') throw err
+    // 网络层失败（断网 / 后端未启动 / 跨域被拦）
+    throw new Error('网络异常，请检查连接后重试')
+  }
+
+  // 解析响应体：成功与失败都可能带 JSON；解析失败按空体处理
+  let data = null
+  try {
+    data = await res.json()
+  } catch {
+    data = null
+  }
+
+  if (!res.ok) {
+    const error = new Error(extractMessage(data, res.status))
+    error.status = res.status
+    throw error
+  }
+  return data
+}
+
+/**
+ * 发送 DELETE 请求（模块 2 删除云端备份 DELETE /backup 用），无请求体。
+ *
+ * 与 getJson 同构：DELETE 无 body / 不发 Content-Type，仅透传调用方附加头（如 Authorization）。
+ * 复用 extractMessage 错误抽取与 status 透出；支持 401（access 过期，调用方续签重试）等带 status 的
+ * 错误由调用方按语义分流。取消（AbortError）原样透传。
+ * @param {string} path 接口路径（以 / 开头，如 /backup）
+ * @param {object} [options]
+ * @param {AbortSignal} [options.signal] 取消信号
+ * @param {object} [options.headers] 附加请求头（如鉴权 Authorization: Bearer <access>）
+ * @returns {Promise<any>} 成功时解析后的响应体（如 { deleted: true }）
+ * @throws {Error} 非 2xx 时抛出，message 为后端 detail；附带 status 字段。
+ */
+export async function deleteJson(path, { signal, headers } = {}) {
+  let res
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      method: 'DELETE',
+      // DELETE 无请求体，故不带 Content-Type；仅透传调用方附加头（如 Authorization）。
+      headers: { ...headers },
       signal
     })
   } catch (err) {

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import logging
 import re
 from typing import Any
 
@@ -39,9 +40,12 @@ from core.exception.exceptions import (
     InvalidChecksumError,
     RecoveryBlobNotFoundError,
 )
-from core.oss.oss import get_object, put_object
+from core.oss.oss import delete_object, get_object, put_object
 from models.backup import BackupBlob
 from models.recovery_blob import RecoveryBlob
+
+# 备份模块日志器（命名对齐工程约定 safevault.xxx）。用于「尽力清理 OSS blob」失败时记录告警。
+logger = logging.getLogger("safevault.backup")
 
 # SHA-256 十六进制摘要：恰好 64 个十六进制字符（大小写均可）。预编译避免每次上传重复编译。
 _CHECKSUM_RE = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -264,6 +268,73 @@ async def get_backup_meta(
         "size": row.size_bytes,
         "updatedAt": row.updated_at,
     }
+
+
+async def delete_backup(
+    session: AsyncSession,
+    user_id: int,
+) -> dict[str, Any]:
+    """删除云端整库备份，返回 { deleted: True }（对齐时序图 §4，方案 A：开关与删除解耦）。
+
+    语义边界（务必区分，勿与「关闭云备份开关」混淆）：本接口是用户在设置页**显式点击「删除云端备份」
+    危险操作并二次确认**后才触发的彻底删除；而「关闭云备份开关」仅是本地停传、**不调本接口、不删云端
+    blob**。两类操作解耦——开关控制「以后还传不传」，删除控制「云端现有那份还留不留」。
+
+    流程严格对齐时序图 §4 备份服务部分（鉴权解 userId 已在路由依赖完成）：
+      1) SELECT BackupBlob BY userId（元信息库是「最新有效快照」的权威指针）
+      2) 无记录 → 直接返回 { deleted: True }（**幂等**：本就无备份也视为删除成功，不报 404，便于客户端
+         无脑重试 / 重复点击）
+      3) 命中 → **先删元信息**（session.delete + flush）使云端「逻辑上无备份」即时生效：此后 GET /backup
+         立即 404、GET /backup/meta 立即 hasBackup=False；**再尽力清理 OSS blob**（delete_object），
+         清理失败**吞异常并记日志**——元信息已删、对客户端语义上「已无备份」，残留对象交由桶生命周期策略
+         兜底回收，绝不让 blob 清理失败把整个删除接口拖成失败。
+
+    为何「先删元信息再清 blob」（与上传的「先写 blob 再更元信息」相反）：元信息库是权威指针。删除时先抹掉
+    指针，云端立刻表现为「无备份」，符合用户「点了删除就该没了」的直觉；纵使随后清 OSS 失败，也只是留下
+    一份**无人可索引、无指针指向**的孤儿对象（生命周期策略回收），不影响正确性。反之若先删 blob 失败 /
+    先删 blob 后删元信息失败，则可能出现「指针还在但对象已没」的悬空指针，下载即报错。
+
+    零知识：本接口只按 object_key 删除不透明字节，**永不解析**密文内容。
+
+    :param session: 异步数据库会话（由路由依赖注入，事务化，退出自动提交）
+    :param user_id: 当前登录用户的 userId（由 get_current_user_id 鉴权解出，作为 blob 归属）
+    :returns: {"deleted": True}（幂等：命中删除、本无备份、重复删除均返回此结果）
+    """
+    # 步骤 1) SELECT BY account_id（元信息库权威指针）。
+    existing = await session.scalar(
+        select(BackupBlob).where(BackupBlob.account_id == user_id)
+    )
+
+    # 步骤 2) 无记录 → 幂等成功（本就无备份也视为已删除，不报 404）。
+    # 这里直接返回，既不触库写、也不触 OSS——客户端重复点击 / 删除一个本无备份的账户都稳定得到成功。
+    if existing is None:
+        return {"deleted": True}
+
+    # 步骤 3a) 先删元信息：抹掉权威指针，使云端「逻辑上无备份」即时生效（GET /backup 即 404、
+    # GET /backup/meta 即 hasBackup=False）。先取出 object_key，delete 后实体已与会话分离不便再读属性。
+    object_key = existing.object_key
+    await session.delete(existing)
+    # flush 立即把 DELETE 下发到库（但不提交，提交由会话依赖收尾），确保后续同事务内查询即看不到该记录，
+    # 也确保「元信息已删」先于「清 OSS」落地——契合「先删元信息再清 blob」的顺序承诺。
+    await session.flush()
+
+    # 步骤 3b) 再尽力清理 OSS 实体 blob。清理失败**不应让整个删除失败**：元信息已删、语义上已无备份，
+    # 残留对象交由桶生命周期策略兜底回收。故此处宽口径捕获并吞掉所有异常、仅记 error 日志。
+    # 注：此为「尽力清理」的最外层兜底，捕获 Exception 是有意为之（已记录日志并转为不阻塞主链路），
+    # 不属于「裸 except 兜底业务异常」的反模式。
+    try:
+        await delete_object(object_key)
+    except Exception:  # noqa: BLE001 - 尽力清理：清 OSS 失败不阻塞删除主链路，记日志由生命周期策略兜底
+        # 不带敏感信息（object_key 仅为 backup/{userId} 指针，非密文内容）；userId 便于排查孤儿对象。
+        logger.error(
+            "删除云端备份：元信息已删但清理 OSS 对象失败，残留对象交由生命周期策略回收 "
+            "userId=%s object_key=%s",
+            user_id,
+            object_key,
+            exc_info=True,
+        )
+
+    return {"deleted": True}
 
 
 async def upsert_recovery_blob(

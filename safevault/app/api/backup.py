@@ -1,7 +1,8 @@
 """加密备份相关路由（模块 2）。
 
-已实现 §1 上传整库快照 `PUT /backup`、§2 下载最新快照 `GET /backup` 与 §3 仅取元信息
-`GET /backup/meta`。其余接口（DELETE /backup）暂不实现。
+已实现 §1 上传整库快照 `PUT /backup`、§2 下载最新快照 `GET /backup`、§3 仅取元信息
+`GET /backup/meta` 与 §4 删除云端备份 `DELETE /backup`（方案 A：开关与删除解耦——关闭云备份
+开关只本地停传、不调本接口；仅用户显式点「删除云端备份」并二次确认才走 DELETE）。
 """
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.deps import get_current_user_id
 from client.db_client import get_session
 from schemas.backup import (
+    BackupDeleteResponse,
     BackupDownloadResponse,
     BackupMetaResponse,
     BackupUploadRequest,
@@ -20,6 +22,7 @@ from schemas.backup import (
     RecoveryBlobUploadResponse,
 )
 from services.backup import (
+    delete_backup,
     download_backup,
     get_backup_meta,
     get_recovery_blob,
@@ -115,6 +118,33 @@ async def get_backup_meta_endpoint(
     # 命中时 result 含 version/size/updatedAt；无备份时仅含 hasBackup=False，
     # 其余字段由 BackupMetaResponse 的默认值 None 补齐（Pydantic 据缺省字段填 None）。
     return BackupMetaResponse(**result)
+
+
+@router.delete("", response_model=BackupDeleteResponse)
+async def delete_backup_endpoint(
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_session),
+) -> BackupDeleteResponse:
+    """删除云端整库备份（幂等，零知识，对齐时序图 §4，方案 A：开关与删除解耦）。
+
+    语义边界（务必区分）：本接口对应用户在设置页**显式点击「删除云端备份」危险操作并二次确认**触发的
+    彻底删除；**关闭云备份开关只是本地停传、不调本接口、不删云端 blob**——两类操作解耦。
+
+    流程对齐时序图 §4：
+      1) 校验 access token（未过期、token_version 一致）→ 无效 401（已在依赖 get_current_user_id
+         前置完成，并解析出当前登录用户的 userId，作为 blob 归属）
+      2) SELECT object_key BY userId
+         - 无备份 → 200 { deleted: true }（**幂等**：本就无备份也视为删除成功，**不报 404**，
+           便于客户端无脑重试 / 重复点击）
+         - 命中 → **先删元信息**（使云端「逻辑上无备份」即时生效：GET /backup 立即 404、
+           GET /backup/meta 立即 hasBackup=false）→ **再尽力清理 OSS blob**（清理失败吞异常并记日志，
+           残留对象交由桶生命周期策略兜底，不阻塞删除主链路）→ 200 { deleted: true }
+
+    幂等：重复点击 / 本无备份统一返回 { deleted: true }（详见 services/backup.delete_backup）。
+    零知识：本接口只按 object_key 删除不透明字节，**永不解析**密文内容。
+    """
+    result = await delete_backup(session=session, user_id=user_id)
+    return BackupDeleteResponse(**result)
 
 
 @router.put("/recovery-blob", response_model=RecoveryBlobUploadResponse)

@@ -121,8 +121,18 @@ export function useSettings() {
 
   // ---- 敏感页前置身份验证（在设置页就地完成，验证通过才跳转）----
   // 这样取消时不发生路由跳转，避免「先滑入空白页、取消后再滑回」的白屏间隔。
-  /** 账户密码兜底验证弹窗状态（仅未开启指纹时使用；标题/提示随目标功能切换） */
-  const verify = reactive({ visible: false, title: '', hint: '' })
+  /**
+   * 账户密码兜底验证弹窗状态（仅未开启指纹时使用；标题 / 提示 / 确认文案 / 色调随目标功能切换）。
+   * confirmText / tone 让同一个共享验证窗口在不同场景下变脸：修改密码等用蓝色「验证并继续」，
+   * 删除云备份等危险操作用红色「验证并删除」。
+   */
+  const verify = reactive({
+    visible: false,
+    title: '',
+    hint: '',
+    confirmText: '验证并继续',
+    tone: 'brand'
+  })
   /** 当前等待中的验证 Promise 决议器（密码弹窗路径用） */
   let verifyResolve = null
 
@@ -130,16 +140,19 @@ export function useSettings() {
    * 前置身份验证（与「生物识别解锁」设置一致，单一方式不混用）：
    *   已开启指纹 → 拉起系统指纹框，返回是否通过；
    *   未开启指纹 → 打开账户密码兜底弹窗，等待用户验证 / 取消。
-   * @param {{ title: string, hint: string }} opts 密码弹窗文案
+   * @param {{ title: string, hint: string, confirmText?: string, tone?: 'brand'|'danger' }} opts
+   *   密码弹窗文案：confirmText 默认「验证并继续」、tone 默认 'brand'；危险操作可传 'danger' 红色确认。
    * @returns {Promise<boolean>} 是否通过
    */
-  async function requireIdentity({ title, hint }) {
+  async function requireIdentity({ title, hint, confirmText = '验证并继续', tone = 'brand' }) {
     if (biometric.value) {
       return requestBiometric('verify')
     }
-    // 密码路径：打开弹窗并等待结果
+    // 密码路径：打开弹窗并等待结果（确认文案 / 色调随场景定制）
     verify.title = title
     verify.hint = hint
+    verify.confirmText = confirmText
+    verify.tone = tone
     verify.visible = true
     return new Promise((resolve) => {
       verifyResolve = resolve
@@ -180,6 +193,22 @@ export function useSettings() {
     if (ok) router.push({ name: 'RegenerateRecovery' })
   }
 
+  /**
+   * 删除云端备份：与「修改密码」同款前置身份验证（指纹 / 主密码），**通过后才执行删除**。
+   * 删除不可逆（销毁唯一云端灾备），故用身份验证作强确认——输密码 / 指纹这一有摩擦的动作
+   * 本身即「确认」，不再叠加普通二次确认框（避免双重弹窗、与修改密码保持一致）。验证窗口里
+   * 用红色「验证并删除」+ 危险提示条点明影响；取消 / 验证失败则保持现状、不删除。
+   */
+  async function requestDeleteBackup() {
+    const ok = await requireIdentity({
+      title: '验证身份以删除云端备份',
+      hint: '删除后云端备份将被彻底清除且无法恢复（本地数据不受影响）。',
+      confirmText: '验证并删除',
+      tone: 'danger'
+    })
+    if (ok) await deleteCloudBackup()
+  }
+
   /** 进入「数据待恢复」再入口页（输入恢复码恢复 / 无恢复码则放弃旧数据重建） */
   function openRecoverData() {
     router.push({ name: 'RecoverData' })
@@ -193,6 +222,11 @@ export function useSettings() {
   /** 进入分类管理页 */
   function openCategories() {
     router.push({ name: 'CategoryManage' })
+  }
+
+  /** 进入隐私政策页 */
+  function openPrivacy() {
+    router.push({ name: 'PrivacyPolicy' })
   }
 
   return {
@@ -219,12 +253,13 @@ export function useSettings() {
     openRecoverData,
     openTrash,
     openCategories,
+    openPrivacy,
     // 云端恢复（模块 2 GET /backup）：恢复进行中标志 + 触发入口
     restoringFromCloud,
     restoreFromCloud,
-    // 云端备份删除（模块 2 DELETE /backup）：删除进行中标志 + 触发入口（视图二次确认后调用）
+    // 云端备份删除（模块 2 DELETE /backup）：删除进行中标志 + 触发入口（先身份验证，通过后删除）
     deletingBackup,
-    deleteCloudBackup,
+    requestDeleteBackup,
     logout,
     // 前置身份验证（账户密码兜底弹窗）状态与回调
     verify,

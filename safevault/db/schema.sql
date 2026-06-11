@@ -49,27 +49,6 @@ CREATE TABLE IF NOT EXISTS `account` (
   COLLATE = utf8mb4_unicode_ci
   COMMENT = '云账户：身份凭据（仅密码验证器，零知识）';
 
-
--- -----------------------------------------------------------------------------
--- 存量库迁移：account 增加 token_version（方案 B 严格立即失效）
--- -----------------------------------------------------------------------------
--- 适用场景：本脚本上线前 account 表已存在（没有 token_version 列）。新库由上面的
--- CREATE TABLE 直接带出该列，无需执行本段；存量库则执行下面的 ALTER 补列。
---
--- 幂等说明：MySQL 的 ADD COLUMN 不支持 IF NOT EXISTS（8.0 起亦无），故本段单独成行，
--- 仅在「列尚不存在」时执行一次；重复执行会报 Duplicate column，属预期（可据此判断已迁移）。
--- DEFAULT 1 + NOT NULL：存量行自动补 1，与新注册账户初值一致。补列后，所有「迁移前签发、
--- 不含 tv 字段」的老 access 会在 deps.decode_access_token 处因缺 tv 被判 401，迫使重新登录，
--- 符合方案 B「自增即失效」语义——无需为存量 access 做兼容。
---
---   ALTER TABLE `account`
---       ADD COLUMN `token_version` BIGINT UNSIGNED NOT NULL DEFAULT 1
---       COMMENT '令牌版本号（access 失效闸，方案B）' AFTER `status`;
---
--- 回滚（如需）：DROP 该列即可，回滚后 access 鉴权不再比对 version（退回纯 refresh 白名单方案）。
---   ALTER TABLE `account` DROP COLUMN `token_version`;
-
-
 -- -----------------------------------------------------------------------------
 -- 模块 2：加密备份 blob 存储（核心业务后端）
 -- -----------------------------------------------------------------------------
@@ -107,23 +86,6 @@ CREATE TABLE IF NOT EXISTS `backup_blob` (
 
 
 -- -----------------------------------------------------------------------------
--- 存量库迁移：backup_blob 增加 wrapped_data_key（包裹式密钥 envelope encryption）
--- -----------------------------------------------------------------------------
--- 适用：本脚本上线前 backup_blob 已存在（无 wrapped_data_key 列），登录时报
---   「Unknown column 'backup_blob.wrapped_data_key' in 'field list'」。
--- 新库由上面 CREATE 直接带出该列，无需本段；存量库执行下面的 ALTER 补列一次
--- （MySQL 的 ADD COLUMN 不支持 IF NOT EXISTS，重复执行报 Duplicate column 属预期）。
---
---   ALTER TABLE `backup_blob`
---       ADD COLUMN `wrapped_data_key` TEXT NULL
---       COMMENT '「密码包裹的 DataKey」密文（base64）' AFTER `kdf_params`;
---
--- 开发期亦可直接 DROP 重建（备份数据可丢弃，account 保留）：
---   DROP TABLE IF EXISTS `recovery_blob`, `backup_blob`;
--- 然后重新 `source db/schema.sql;`（account 因 IF NOT EXISTS 保留，两表按新定义重建）。
-
-
--- -----------------------------------------------------------------------------
 -- 模块 3：恢复凭据（key escrow）—— 仅决策点 C2 启用
 -- -----------------------------------------------------------------------------
 -- 注册时额外生成「恢复凭据（恢复码/助记词）」包裹一份 DataKey；忘记密码重置后，
@@ -146,16 +108,3 @@ CREATE TABLE IF NOT EXISTS `recovery_blob` (
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_unicode_ci
   COMMENT = '恢复凭据：用恢复码包裹的 DataKey 副本（决策点 C2，已启用）';
-
-
--- -----------------------------------------------------------------------------
--- 存量库迁移：recovery_blob.wrapped_data_key 由 VARBINARY(512) 改为 TEXT
--- -----------------------------------------------------------------------------
--- 适用：本脚本上线前 recovery_blob 已按旧定义 VARBINARY(512) 建出。包裹式下前端上传的是
--- base64 文本（对齐 ORM 模型 Text），故改为 TEXT；存量库执行下面的 ALTER 一次：
---
---   ALTER TABLE `recovery_blob`
---       MODIFY COLUMN `wrapped_data_key` TEXT NOT NULL
---       COMMENT '「恢复码包裹的 DataKey」密文（base64）';
---
--- 开发期亦可直接 DROP 重建（见上方 backup_blob 迁移段的 DROP 指引）。

@@ -120,7 +120,7 @@ const { sheetRoot, sheetStyle, onTouchStart, onTouchMove, onTouchEnd } = useShee
       <!-- 说明条 -->
       <p class="cat-note">
         <AppIcon name="info" :width="14" :height="14" class="cat-note__icon" />
-        <span>删除分类不会删除密码，仅把该分类下的密码移为「未分类」。</span>
+        <span>删除分类不会删除密码，仅把该分类下的密码移为未分类</span>
       </p>
 
       <!-- 分类列表 -->

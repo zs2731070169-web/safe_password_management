@@ -34,17 +34,16 @@ export default defineConfig({
     }
   },
   server: {
+    // 绑定 IPv4 127.0.0.1（而非默认解析到 IPv6 ::1）：127.0.0.1 已在系统代理绕行列表内，
+    // dev 资源请求直连不走代理，避免本地全局代理（如 Clash）劫持 localhost 导致页面加载变慢。
+    host: '127.0.0.1',
     port: 5180,
     open: true,
-    // 开发联调：把 /auth/*、/backup 反向代理到本地后端（默认 8000 端口），绕过浏览器跨域。
+    // 开发联调：前端统一走 /safevault 根（认证 /safevault/auth/*、加密备份 /safevault/backup*），
+    // 经这一条反向代理转发到本地后端（默认 8000 端口），绕过浏览器跨域。
     // 后端地址可经 VITE_DEV_API_TARGET 覆盖；生产 / APK 改用 VITE_API_BASE_URL 直连（见 services/http.js）。
     proxy: {
-      '/auth': {
-        target: process.env.VITE_DEV_API_TARGET || 'http://localhost:8000',
-        changeOrigin: true
-      },
-      // 模块 2 加密备份：覆盖式上传 PUT /backup（及后续 GET / DELETE /backup）走同一后端
-      '/backup': {
+      '/safevault': {
         target: process.env.VITE_DEV_API_TARGET || 'http://localhost:8000',
         changeOrigin: true
       }

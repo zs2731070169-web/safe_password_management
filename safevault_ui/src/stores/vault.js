@@ -3,7 +3,7 @@ import { ref, computed } from 'vue'
 
 /**
  * 回收站保留天数：条目移入回收站后可恢复的窗口期（DRD「30 天内可恢复」）。
- * 超期条目应被永久清除；当前为纯前端 mock，不做后台定时清理，仅用于展示「剩余 N 天」。
+ * 超期条目应被永久清除；当前不做后台定时清理，仅用于展示「剩余 N 天」。
  */
 export const TRASH_RETENTION_DAYS = 30
 
@@ -12,20 +12,24 @@ export const TRASH_RETENTION_DAYS = 30
  *
  * 持有密码条目列表、分类筛选与搜索状态，并对外提供取出明文密码的能力；
  * 同时托管「回收站」：删除条目为软删除（移入回收站），支持恢复 / 彻底删除 / 清空。
- * 当前为纯前端 mock：条目数据与明文均为本地模拟，真实接入时
- * 仅替换文件末尾的 mock 实现（拉取列表 / 解密取明文 / 回收站初始数据），视图与 composable 不动。
+ *
+ * 数据来源（已接入后端）：整库（条目 / 回收站 / 分类）是零知识加密 blob，登录后由
+ * composables/useLocalPersist（本机密文秒恢复）与 composables/useCloudHydrate（云端 GET /backup
+ * 下载解密、权威覆盖）经 replaceFromSnapshot 注入。故本 store 初始为空，不再内置任何样本数据；
+ * 库变更后由对应编排加密落盘 / 回传云端。
  */
 export const useVaultStore = defineStore('vault', () => {
   // ---------------------------------------------------------------
   // state
   // ---------------------------------------------------------------
-  /** 全部密码条目 */
-  const entries = ref(mockEntries())
+  /** 全部密码条目（初始为空，登录后由云端 / 本地密文快照水合注入） */
+  const entries = ref([])
   /**
    * 回收站条目（软删除区）。每项在原条目字段基础上追加 deletedAt（删除时刻 ms 时间戳），
    * 供「剩余可恢复天数」计算。不参与主列表 / 筛选 / 健康度诊断。
+   * 初始为空，随整库快照一并水合。
    */
-  const trashedEntries = ref(mockTrashedEntries())
+  const trashedEntries = ref([])
   /** 当前选中分类（'all' 表示全部） */
   const activeCategory = ref('all')
   /** 搜索关键词 */
@@ -33,19 +37,17 @@ export const useVaultStore = defineStore('vault', () => {
   /**
    * 云端水合进行中标志（会话内存态，不持久化）。
    * 登录后由 composables/useCloudHydrate 在「下载解密云端整库 → 覆盖本地」期间置真，
-   * 供密码库视图显示加载占位，避免先闪 mock 再被云端数据替换。
+   * 供密码库视图显示加载占位，避免在云端数据到达前先露出空态。
    */
   const hydrating = ref(false)
 
-  /** 分类定义（顺序即展示顺序，all 固定置首） */
-  const categories = ref([
-    { key: 'all', label: '全部' },
-    { key: 'social', label: '社交' },
-    { key: 'finance', label: '金融' },
-    { key: 'shopping', label: '购物' },
-    { key: 'work', label: '工作' },
-    { key: 'email', label: '邮箱' }
-  ])
+  /**
+   * 分类定义（顺序即展示顺序，all 固定置首）。
+   * 初始仅含内置「全部」筛选项——与 entries/trashedEntries 一致，本 store 不内置任何样本分类；
+   * 真实分类由用户经新增密码页 / 分类管理页动态创建（addCategory），或登录后由云端整库快照
+   * 经 replaceFromSnapshot 权威覆盖注入。`all` 非用户分类，仅作「全部」筛选锚点，永不参与增删改。
+   */
+  const categories = ref([{ key: 'all', label: '全部' }])
 
   // ---------------------------------------------------------------
   // getters
@@ -171,13 +173,14 @@ export const useVaultStore = defineStore('vault', () => {
   }
 
   /**
-   * 取出指定条目的明文密码（mock）
-   * 真实接入时此处走解密 / 后端取值。
+   * 取出指定条目的明文密码。
+   * 条目明文随整库快照一并解密注入内存态，直接从当前条目读取即可（不再查任何样本数据）。
    * @param {string} id 条目 id
-   * @returns {string} 明文密码
+   * @returns {string} 明文密码，条目不存在时返回空串
    */
   function getSecret(id) {
-    return mockSecret(id)
+    const entry = entries.value.find((item) => item.id === id)
+    return entry?.password ?? ''
   }
 
   /**
@@ -240,20 +243,21 @@ export const useVaultStore = defineStore('vault', () => {
   }
 
   /**
-   * 新增密码条目（mock）
-   * 真实接入时此处走加密入库 / 后端写入。
+   * 新增密码条目。
+   * 零知识 blob 模型下无逐条后端写入：条目写入内存态后，由 useLocalPersist / useCloudBackup
+   * 把整库加密落盘 / 回传云端，故此处只在本地构造条目即可。
    * @param {{ name: string, account?: string, password: string, url?: string, category?: string, note?: string }} payload
    * @returns {object} 新建的条目
    */
   function addEntry(payload) {
-    const entry = mockCreateEntry(payload, entries.value)
+    const entry = buildEntry(payload, entries.value)
     entries.value.unshift(entry) // 置顶以呼应「最近更新」
     return entry
   }
 
   /**
-   * 更新现有密码条目（mock）
-   * id 保持不变，按新名称重算图标字标；真实接入时此处走加密回写。
+   * 更新现有密码条目。
+   * id 保持不变，按新名称重算图标字标；变更后由 useLocalPersist / useCloudBackup 整库加密回写。
    * @param {string} id 条目 id
    * @param {{ name: string, account?: string, password: string, url?: string, category?: string, note?: string }} payload
    * @returns {object | null} 更新后的条目，id 不存在时返回 null
@@ -294,9 +298,8 @@ export const useVaultStore = defineStore('vault', () => {
   /**
    * 清空整库（条目 + 回收站）—— DataKey 失效 / 待恢复时调用。
    *
-   * 重置密码后旧 DataKey 作废，理应解不出任何密文、库为空；但 mock 层在 store 加载即注入
-   * 样本条目（mockEntries），若不擦除，跳过恢复 / 待恢复态下会误把种子数据当作「已恢复的数据」
-   * 展示。真实接入后此函数同样适用：无 DataKey 时清掉本地会话内存态即可。
+   * 重置密码后旧 DataKey 作废，解不出任何密文、库应为空。此函数清掉本地会话内存态（条目 +
+   * 回收站），避免在待恢复态下残留上一会话已水合的数据。
    * 分类（categories）一并重置为仅剩内置「全部」，避免空库下仍残留旧分组标签。
    */
   function clearAll() {
@@ -338,123 +341,18 @@ export const useVaultStore = defineStore('vault', () => {
 })
 
 // ===============================================================
-// 以下为 mock 实现，真实接入时替换即可
+// 本地辅助：条目构造与派生（非 mock；零知识 blob 模型下条目在端内构造，无逐条后端接口）
 // ===============================================================
 
-/** 模拟密码条目列表（account / password 均为真实明文，展示脱敏由 settings.maskAccount 动态控制） */
-function mockEntries() {
-  return [
-    {
-      id: 'apple',
-      name: 'Apple ID',
-      monogram: 'A',
-      account: 'david@icloud.com',
-      password: 'Ap9!eSecure2024',
-      url: 'https://appleid.apple.com',
-      category: 'email'
-    },
-    {
-      id: 'github',
-      name: 'GitHub',
-      monogram: 'G',
-      account: 'dev_master',
-      password: '123456', // 弱密码样本：纯数字 6 位，强度规则判为「弱」
-      url: 'https://github.com',
-      category: 'work'
-    },
-    {
-      id: 'hsbc',
-      name: 'HSBC Bank',
-      monogram: 'H',
-      account: '8888123456781234',
-      password: 'Hsbc$Bank8888',
-      url: 'https://www.hsbc.com.hk',
-      category: 'finance'
-    },
-    {
-      id: 'wechat',
-      name: '微信 (WeChat)',
-      monogram: '微',
-      account: 'wxid_abc8293',
-      password: 'Welcome@2024', // 与 YouTube 共用同一密码，构成「重复使用」样本
-      url: 'https://weixin.qq.com',
-      category: 'social'
-    },
-    {
-      id: 'youtube',
-      name: 'YouTube',
-      monogram: 'Y',
-      account: 'creator@gmail.com',
-      password: 'Welcome@2024', // 与微信重复
-      url: 'https://youtube.com',
-      category: 'social'
-    }
-  ]
-}
-
-/** 模拟取明文密码 */
-function mockSecret(id) {
-  const entry = mockEntries().find((item) => item.id === id)
-  return entry?.password ?? ''
-}
-
-/** 一天的毫秒数（回收站「剩余天数」计算用） */
-const DAY_MS = 24 * 60 * 60 * 1000
-
 /**
- * 模拟回收站初始条目（对齐 DRD 4.12「回收站 3 条」）。
- * deletedAt 以「当前时间往前推 N 天」生成，刻意覆盖刚删除 / 删除较久 / 临近到期三档，
- * 便于查看「剩余 N 天」与临期高亮。真实接入时改为从后端 / 本地库读取回收站数据。
- * @returns {object[]}
- */
-function mockTrashedEntries() {
-  const now = Date.now()
-  return [
-    {
-      id: 'trash-netflix',
-      name: 'Netflix',
-      monogram: 'N',
-      account: 'family@gmail.com',
-      password: 'NflxWatch#2023',
-      url: 'https://netflix.com',
-      category: 'shopping',
-      note: '',
-      deletedAt: now - 1 * DAY_MS // 1 天前删除，剩余 29 天
-    },
-    {
-      id: 'trash-dropbox',
-      name: 'Dropbox',
-      monogram: 'D',
-      account: 'david_w',
-      password: 'Dbx!Storage9',
-      url: 'https://dropbox.com',
-      category: 'work',
-      note: '',
-      deletedAt: now - 12 * DAY_MS // 12 天前删除，剩余 18 天
-    },
-    {
-      id: 'trash-twitter',
-      name: 'X (Twitter)',
-      monogram: 'X',
-      account: 'dev_master',
-      password: 'oldPass123', // 旧弱密码样本（已不在主库，不计入健康度）
-      url: 'https://x.com',
-      category: 'social',
-      note: '',
-      deletedAt: now - 28 * DAY_MS // 28 天前删除，剩余 2 天（临期）
-    }
-  ]
-}
-
-/**
- * 模拟根据表单构造一条新条目
- * 真实接入时由后端返回完整条目（含 id），此处用「现有条数 + 名称」派生 id 占位，
+ * 据表单构造一条新条目。
+ * 零知识 blob 模型下条目 id 由端内生成（无后端返回），用「现有条数 + 名称」派生稳定占位 id，
  * 避免依赖运行时时间戳。
  * @param {object} payload 表单字段
  * @param {object[]} existing 现有条目（用于生成不重复的占位 id）
  * @returns {object}
  */
-function mockCreateEntry(payload, existing) {
+function buildEntry(payload, existing) {
   const name = (payload.name ?? '').trim()
   return {
     id: `entry-${existing.length + 1}-${name.toLowerCase().replace(/\s+/g, '-') || 'item'}`,

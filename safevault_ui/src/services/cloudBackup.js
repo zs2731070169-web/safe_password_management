@@ -21,7 +21,7 @@
  * 依赖方向：本模块**不静态 import 任何 store**（cloudAccount 反向静态依赖本模块取 clearBackupCache，
  * 静态互引会成环），运行时用动态 import 取 store，规避循环依赖。
  */
-import { getJson, putJson } from '@/services/http'
+import { deleteJson, getJson, putJson } from '@/services/http'
 import { decryptJson, encryptJson } from '@/services/crypto'
 
 /** 本地备份状态持久化 key（与 safevault.* 家族统一前缀） */
@@ -390,4 +390,62 @@ export async function fetchBackupMeta({ signal } = {}) {
     size: res.size,
     updatedAt: res.updatedAt
   }
+}
+
+/**
+ * 带 access token 发 DELETE /backup；首发 401（access 过期）则续签一次后重试。
+ * 非 401 错误（网络等）原样上抛，由调用方按语义分流。与 getWithAuthRetry 同款续签重试模式。
+ *
+ * 注意：§4 删除接口是**幂等**的——本无备份后端也回 200 { deleted: true }，故无 404 特判。
+ * @param {any} account cloudAccount store 实例
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<{ deleted: boolean }>}
+ */
+async function deleteWithAuthRetry(account, signal) {
+  const send = (token) =>
+    deleteJson('/backup', { signal, headers: { Authorization: `Bearer ${token}` } })
+  try {
+    return await send(account.accessToken)
+  } catch (err) {
+    if (err?.name === 'AbortError') throw err
+    if (err?.status !== 401) throw err
+    // access 过期：静默续签后用新 access 重试一次（refresh 会把新 access 写回 store）
+    const ok = await account.refresh({ signal })
+    if (!ok) throw err
+    return await send(account.accessToken)
+  }
+}
+
+/**
+ * 彻底删除云端备份（覆盖式销毁）。对齐时序图 §4 `DELETE /backup`（方案 A：开关与删除解耦）。
+ *
+ * **仅供设置页「删除云端备份」危险操作（经二次确认）调用**——关闭云备份开关只本地停传、绝不调本函数。
+ * 后端先删元信息（云端「逻辑上无备份」即时生效）再异步清 OSS blob，且**幂等**（本无备份也回成功）。
+ *
+ * 删除成功后**清空本地备份状态**（safevault.backup 归零）：避免删除后若重新开启云备份，本地仍残留
+ * 旧 version（领先于已清空的云端），导致下次上传取 version+1 仍领先、或展示「上次备份」误导。归零后
+ * 重新开启即视为首次备份（version 从 1 起），与「云端已无备份」的事实一致。
+ *
+ * @param {object} [options]
+ * @param {AbortSignal} [options.signal] 取消信号
+ * @returns {Promise<{ status: 'ok'|'skipped' }>}
+ *   - ok：删除成功（幂等，本无备份也算成功）
+ *   - skipped：未登录 / 无 access，未发起请求
+ * @throws {Error} 401（续签后仍失败）/ 网络等需提示的错误；AbortError 原样上抛
+ */
+export async function deleteBackup({ signal } = {}) {
+  // 运行时取 store，规避与 cloudAccount 的静态循环依赖（与 push/pull/fetchBackupMeta 一致）
+  const { useCloudAccountStore } = await import('@/stores/cloudAccount')
+  const account = useCloudAccountStore()
+
+  // 守卫：未登录或无 access 一律不发起（删除入口在已登录设置页，正常不会命中）
+  if (!account.loggedIn || !account.accessToken) return { status: 'skipped' }
+
+  // DELETE /backup（401 续签重试一次）；网络/续签失败等交由上层提示
+  await deleteWithAuthRetry(account, signal)
+
+  // 删除成功：清空本地备份状态（version 归零），与「云端已无备份」对齐（详见函数注释）
+  saveLocal(emptyLocal())
+
+  return { status: 'ok' }
 }

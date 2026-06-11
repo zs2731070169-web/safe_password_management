@@ -12,8 +12,10 @@ const SHEET_ROUTES = new Set([
   'EditPassword',
   'ChangeMasterPassword',
   'RegenerateRecovery',
+  'RecoverData',
   'Trash',
   'CategoryManage',
+  'PrivacyPolicy',
   // 登录流程：从登录首页（Unlock）自右侧弹出 / 收回
   'MasterPassword', // 账户密码登录
   'Onboarding', // 创建云账户（注册）
@@ -116,6 +118,14 @@ const routes = [
     meta: { title: '重新生成恢复码', requiresUnlock: true }
   },
   {
+    path: '/settings/recover-data',
+    name: 'RecoverData',
+    // 数据待恢复·再入口：从设置页「数据待恢复」进入，需已登录。重置后跳过恢复落入死状态时，
+    // 在此输入恢复码恢复、或无恢复码时放弃旧数据重建（复用 RecoverDataStep）。
+    component: () => import('@/views/recovery/RecoverDataView.vue'),
+    meta: { title: '恢复数据', requiresUnlock: true }
+  },
+  {
     path: '/settings/trash',
     name: 'Trash',
     // 回收站：从设置「数据 → 回收站」进入，需已解锁。承载软删除条目，可恢复 / 彻底删除 / 清空。
@@ -129,6 +139,13 @@ const routes = [
     // 必须先于 /vault/:id 注册，否则 categories 会被动态段当作 id 匹配
     component: () => import('@/views/categories/CategoryManageView.vue'),
     meta: { title: '分类管理', requiresUnlock: true }
+  },
+  {
+    path: '/settings/privacy',
+    name: 'PrivacyPolicy',
+    // 隐私政策：从设置「关于 → 隐私政策」进入。纯静态正文，公开内容，不加 requiresUnlock。
+    component: () => import('@/views/about/PrivacyPolicyView.vue'),
+    meta: { title: '隐私政策' }
   },
   {
     path: '/vault/add',

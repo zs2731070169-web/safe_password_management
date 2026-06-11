@@ -28,14 +28,14 @@ import {
  *
  * SafeVault 已统一为「云账户即身份」：去掉本地主密码概念，登录 / 解锁、修改密码、
  * 找回密码全部围绕云账户（邮箱 + 密码）。本 store 取代原 stores/auth.js，集中管理：
- *   - 账户绑定（邮箱 + 密码，持久化；mock 明文，真实接入改存 Argon2id 哈希）；
+ *   - 账户绑定（邮箱 + 非机密的密文包裹 pwWrapped/pwKdf，持久化；**明文密码绝不落盘**）；
  *   - 会话态 loggedIn（本次是否已登录解锁，不持久化，启动须重新登录，保持安全体验）；
  *   - 注册 / 登录 / 改密 / 重置 / 续签 / 登出等动作。
  *
  * 路由守卫据 hasAccount（是否已注册）与 loggedIn（本次是否已登录）两闸放行。
  *
- * 当前为纯前端 mock：账户凭据持久化到 localStorage（明文，仅演示）；真实接入时仅替换
- * 文件末尾 mock 区（改调后端 /auth/* 与零知识密钥派生），对外 actions / getters 签名不变。
+ * 认证链路（注册 / 登录 / 改密 / 重置 / 续签 / 登出）均已真实接入后端 /auth/*，走零知识密钥派生，
+ * 明文密码只在会话内存留存、绝不出端也不落盘。本地仅持久化非机密的账户绑定与密文包裹。
  *
  * 对应 SDD 接口：
  *   - sendVerifyCode → POST /auth/verify-code
@@ -54,8 +54,12 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
 
   /** 已绑定的云账户邮箱（null 表示从未注册） */
   const email = ref(restored.email)
-  /** 账户密码（mock 明文持久化；真实接入改为不在本地留可还原凭据） */
-  const password = ref(restored.password)
+  /**
+   * 账户明文密码——**仅本次会话内存留存，绝不持久化**（登录 / 注册 / 重置时由用户输入落入，
+   * 启动 / 锁定 / 登出后即丢失）。它是零知识加密的会话密钥：用它派生 KEK 解开 pwWrapped 包裹的
+   * 整库 DataKey、改密时派生 old_verifier。本地不再存任何可还原的明文凭据。
+   */
+  const password = ref(null)
 
   // ---- 包裹式密钥（envelope encryption）相关状态 ----
   /**
@@ -74,10 +78,11 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
   /** 由 _dataKeyRaw 导入的 AES-GCM CryptoKey 缓存（供整库加解密），随 _dataKeyRaw 变化重建。 */
   let _dataKeyCrypto = null
   /**
-   * 待恢复标志（会话态，不持久化）：重置密码后旧 DataKey 包裹已作废，需用恢复码取回 DataKey。
-   * 登录后由 UI / 水合检测此标志（或解包失败）引导进入「输入恢复码恢复数据」流程。
+   * 待恢复标志（**持久化**，跨刷新/重登稳定）：重置密码后旧 DataKey 包裹已作废，需用恢复码取回
+   * DataKey、或显式「放弃旧数据并重建」(rebuildVault)。登录后由 UI / 水合检测此标志（或解包失败）
+   * 引导进入恢复 / 重建流程；设置页据此常驻「数据待恢复」入口，避免跳过后再也回不去的死状态。
    */
-  const pendingRecovery = ref(false)
+  const pendingRecovery = ref(restored.pendingRecovery)
   /**
    * 注册时一次性产生、待展示给用户的恢复码（明文，仅本次会话内存，展示并确认后即清）。
    * 仅开户流程读取展示；其余时刻为空串。
@@ -127,7 +132,7 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
   const maskedEmail = computed(() => (email.value ? maskAccountText(email.value) : ''))
 
   // ---------------------------------------------------------------
-  // actions（对外签名稳定，真实接入仅替换文件末尾 mock 区）
+  // actions（对外签名稳定）
   // ---------------------------------------------------------------
   /**
    * 下发邮箱验证码（注册 / 重置共用）。对应 POST /auth/verify-code。
@@ -182,9 +187,9 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
 
       loggedIn.value = true
       // 持久化：含 pwWrapped/pwKdf（供下次同机重登离线解包）；kdfParams 供 §3 登录重算 verifier。
+      // 明文密码不落盘——仅 password.value 会话内存留存。
       persistCloudAccount({
         email: addr,
-        password: pwd,
         userId: uid,
         refreshToken: refreshToken.value,
         kdfParams: params,
@@ -222,15 +227,16 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
       // 避免竞态。本地无包裹（换机 / 重置后已清）则解包失败，留待 useCloudHydrate 用云端 wrappedDataKey 解包。
       await unlockDataKeyFromLocal()
       loggedIn.value = true
-      // 续期本地持久化：刷新 refreshToken / userId / kdfParams + 保留 pwWrapped/pwKdf；password 留存。
+      // 续期本地持久化：刷新 refreshToken / userId / kdfParams + 保留 pwWrapped/pwKdf；明文密码不落盘。
+      // 保留待恢复标志：重置后跳过、再重登的场景，登录不应抹掉「数据待恢复」状态。
       persistCloudAccount({
         email: addr,
-        password: pwd,
         userId: uid,
         refreshToken: refreshToken.value,
         kdfParams: params,
         pwWrapped: pwWrapped.value,
-        pwKdf: pwKdf.value
+        pwKdf: pwKdf.value,
+        pendingRecovery: pendingRecovery.value
       })
     })
   }
@@ -238,17 +244,23 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
   /**
    * 校验当前账户密码（不改变登录态）。
    * 用于敏感操作前的二次确认（如修改密码、删除条目）。对应原 verifyMasterPassword。
+   *
+   * 零知识本地校验：不在本地留存任何明文密码，也无需后端——用待验密码 + 本地持有的 pwKdf
+   * 派生 KEK，尝试解开 pwWrapped 包裹的 DataKey；AES-GCM 解包成功即证明密码正确，失败（密码不符）
+   * 则验证标签校验不过抛错。无包裹（未登录 / 重置后待恢复）则无从校验，按未通过处理（fail closed）。
    * @param {string} pwd 待校验密码
-   * @param {object} [options]
-   * @param {AbortSignal} [options.signal]
+   * @param {object} [_options]
+   * @param {AbortSignal} [_options.signal] 本地派生为同步快路径，签名保留以兼容调用方
    * @returns {Promise<boolean>} 是否校验通过
    */
-  async function verifyPassword(pwd, { signal } = {}) {
+  async function verifyPassword(pwd /* , { signal } = {} */) {
+    if (!pwd || !pwWrapped.value || !pwKdf.value) return false
     try {
-      await mockVerifyPassword(pwd, signal)
+      const kek = await deriveKek(pwd, pwKdf.value)
+      await unwrapDataKeyRaw(kek, pwWrapped.value)
       return true
-    } catch (err) {
-      if (err?.name === 'AbortError') throw err
+    } catch {
+      // AES-GCM 验证失败 = 密码不正确（或包裹损坏），按未通过处理
       return false
     }
   }
@@ -309,7 +321,7 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
     loggedIn.value = false
     accessToken.value = null
     refreshToken.value = null
-    // 本地明文 password 同步为新密码（mock verifyPassword 仍依赖；真实接入后移除本地明文留存）。
+    // 会话内存中的明文密码同步为新密码（供本会话 KEK 派生 / 身份二次校验；不落盘）。
     password.value = newPassword
     // kdfParams 已被后端换为新 salt，本地旧配方作废 → 清空；下次登录由 realLogin 重新向后端拉取最新配方。
     kdfParams.value = null
@@ -322,7 +334,6 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
     }
     persistCloudAccount({
       email: email.value,
-      password: newPassword,
       userId: userId.value,
       refreshToken: null,
       kdfParams: null,
@@ -382,12 +393,13 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
       pendingRecovery.value = true
       persistCloudAccount({
         email: addr,
-        password: newPassword,
         userId: uid,
         refreshToken: refreshToken.value,
         kdfParams: params,
         pwWrapped: null,
-        pwKdf: null
+        pwKdf: null,
+        // 持久化待恢复标志：跳过恢复后刷新/重登仍能在设置页看到「数据待恢复」入口
+        pendingRecovery: true
       })
       // 本地 blob 用旧会话 DataKey 加密，重置后会话密钥已清、暂不可解 → 清除，走云端 + 恢复码恢复。
       clearLocalVault()
@@ -418,13 +430,14 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
       // 轮转回写：新 access（仅内存）+ 新 refresh（旧的已被后端 SREM 作废）
       accessToken.value = tokens?.accessToken ?? null
       refreshToken.value = tokens?.refreshToken ?? null
-      // 持久化新的 refreshToken；email/password/userId/kdfParams 维持原值（从当前 ref 读）
+      // 持久化新的 refreshToken；email/userId/kdfParams 维持原值（从当前 ref 读）；明文密码不落盘
+      // 保留待恢复标志：续签发生在待恢复窗口内时不应抹掉该状态
       persistCloudAccount({
         email: email.value,
-        password: password.value,
         userId: userId.value,
         refreshToken: refreshToken.value,
-        kdfParams: kdfParams.value
+        kdfParams: kdfParams.value,
+        pendingRecovery: pendingRecovery.value
       })
       return true
     } catch (err) {
@@ -543,12 +556,12 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
       pwKdf.value = kdf
       persistCloudAccount({
         email: email.value,
-        password: password.value,
         userId: userId.value,
         refreshToken: refreshToken.value,
         kdfParams: kdfParams.value,
         pwWrapped: wrapped,
-        pwKdf: kdf
+        pwKdf: kdf,
+        pendingRecovery: pendingRecovery.value
       })
       return true
     } catch {
@@ -594,19 +607,73 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
     const newPwWrapped = await wrapDataKey(await deriveKek(password.value, newPwKdf), raw)
     pwWrapped.value = newPwWrapped
     pwKdf.value = newPwKdf
+    // 恢复成功：清待恢复标志并随持久化落盘（false），跨刷新/重登不再提示待恢复
+    pendingRecovery.value = false
     persistCloudAccount({
       email: email.value,
-      password: password.value,
       userId: userId.value,
       refreshToken: refreshToken.value,
       kdfParams: kdfParams.value,
       pwWrapped: newPwWrapped,
-      pwKdf: newPwKdf
+      pwKdf: newPwKdf,
+      pendingRecovery: false
     })
-    pendingRecovery.value = false
     // 恢复码不变（仍能解同一 DataKey），recovery-blob 无需重传；仅推一次整库使云端 wrappedDataKey 同步
     await pushSnapshot({ signal }).catch(() => {})
     return true
+  }
+
+  /**
+   * 放弃旧数据、重建钥匙（决策点 C2 兜底：用户**无恢复码**、旧数据不可解密时的正式出路）。
+   *
+   * 重置密码后旧 DataKey 仅能由恢复码取回；若用户没有恢复码，旧数据在零知识下不可恢复。本 action
+   * 生成一把**全新随机 DataKey**：用当前（新）密码包裹持久化、用新生成的恢复码包裹上传 recovery-blob
+   * （给用户一份**新恢复码**保存），并以 force 覆盖云端那份不可解密的旧 backup blob（绕过防回退 409）、
+   * 落一份以新钥匙加密的整库基线（此刻库通常已清空为空）。此后云备份 / 同步恢复正常。
+   *
+   * 顺序要点：①先把新 pwWrapped 落入会话 ref（pushSnapshot 内部经 getWrappedDataKey 取它一并上传，
+   * 必须先就位，否则重置后 pwWrapped 为 null 会被判 skipped）；②云端写入成功**之后**才清待恢复标志
+   * 并持久化 false——若云端写入失败（网络等）则标志保持 true、设置页入口仍在，用户可重试。
+   *
+   * 前置：已登录（持有 access）、password 为当前新密码。
+   * @param {object} [options]
+   * @param {AbortSignal} [options.signal]
+   * @returns {Promise<string | null>} 重建成功返回**新恢复码**（供 UI 展示让用户保存）；未登录 / 缺密码返回 null
+   * @throws {Error} 云端写入失败（force 覆盖 / recovery-blob 上传）原样上抛，由调用方提示并可重试
+   */
+  async function rebuildVault({ signal } = {}) {
+    if (!loggedIn.value || !accessToken.value || !password.value) return null
+    const { pushSnapshot, pushRecoveryBlob } = await import('@/services/cloudBackup')
+    // 1) 全新随机 DataKey（独立于密码），即刻设为会话密钥；用新密码包裹一份 pwWrapped
+    const raw = generateDataKeyRaw()
+    setSessionDataKey(raw)
+    const newPwKdf = generateBackupKdfParams()
+    const newPwWrapped = await wrapDataKey(await deriveKek(password.value, newPwKdf), raw)
+    // 先落会话 ref：pushSnapshot 经 getWrappedDataKey 取 pwWrapped 一并上传，须先就位
+    pwWrapped.value = newPwWrapped
+    pwKdf.value = newPwKdf
+    // 2) 新恢复码 + 以其包裹 DataKey（旧恢复码随新 recovery-blob 覆盖而失效）
+    const code = generateRecoveryCode()
+    const rcKdf = generateBackupKdfParams()
+    const rcWrapped = await wrapDataKey(await deriveKek(normalizeRecoveryCode(code), rcKdf), raw)
+    // 3) 云端写入：force 覆盖不可解密的旧 backup（绕过防回退 409）+ 覆盖 recovery-blob。
+    //    失败原样上抛——此时尚未清待恢复标志，入口仍在，用户可重试。
+    await pushSnapshot({ force: true, signal })
+    await pushRecoveryBlob({ wrappedDataKey: rcWrapped, kdfParams: rcKdf, signal })
+    // 4) 云端就绪后再清待恢复标志并持久化（含新 pwWrapped/pwKdf），死状态正式解除
+    pendingRecovery.value = false
+    persistCloudAccount({
+      email: email.value,
+      userId: userId.value,
+      refreshToken: refreshToken.value,
+      kdfParams: kdfParams.value,
+      pwWrapped: newPwWrapped,
+      pwKdf: newPwKdf,
+      pendingRecovery: false
+    })
+    // 5) 透出新恢复码供 UI 展示（复用开户的 pendingRecoveryCode 展示通道）
+    pendingRecoveryCode.value = code
+    return code
   }
 
   /**
@@ -710,8 +777,8 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
    * **后端会话一并吊销**（后端 SREM 该 refresh 的 jti）+ 清本地 refreshToken，下次须重走 §3 登录。
    *
    * 本地优先兜底：无论后端成功 / 失败（网络错、access 过期 401 等）都**始终本地完成登出**——
-   * 清 loggedIn / accessToken / refreshToken，并把持久化的 refreshToken 清空（**保留**
-   * email/password/userId/kdfParams 账户绑定，使 hasAccount 仍为真，用户回 /unlock 可重新登录）。
+   * 清 loggedIn / accessToken / refreshToken / 会话内存明文密码，并把持久化的 refreshToken 清空
+   * （**保留** email/userId/kdfParams 账户绑定，使 hasAccount 仍为真，用户回 /unlock 可重新登录）。
    * 后端未及移除的白名单项由 refresh 的 TTL 自然过期兜底。
    *
    * @param {object} [options]
@@ -744,12 +811,15 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
       // 主动退出 = 本设备会话彻底结束：连安全区指纹凭据一并清除（与 lock 自动锁定区别：lock 保留，
       // 指纹可快速重登）。清除后指纹入口自动消失，避免登出后指纹进入僵尸态。
       clearBiometricCredential()
+      // 退出登录顺带清掉会话内存中的明文密码（本就不落盘，这里显式置空避免悬留）
+      password.value = null
       persistCloudAccount({
         email: email.value,
-        password: password.value,
         userId: userId.value,
         refreshToken: null,
-        kdfParams: kdfParams.value
+        kdfParams: kdfParams.value,
+        // 登出保留账户绑定，待恢复标志亦保留：重登后仍引导恢复 / 重建
+        pendingRecovery: pendingRecovery.value
       })
     }
     return true
@@ -799,6 +869,7 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
     unlockDataKeyFromWrapped,
     unlockDataKeyFromLocal,
     recoverWithCode,
+    rebuildVault,
     regenerateRecoveryCode,
     pendingRecovery,
     pendingRecoveryCode,
@@ -814,7 +885,7 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
 })
 
 // ===============================================================
-// 后端对接 / mock 混合区
+// 后端对接区（/auth/* 真实接入 + 本地零知识密钥派生）
 // ===============================================================
 //
 // 说明：
@@ -857,10 +928,9 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
 //     store.logout 做**本地优先兜底**——无论后端成功 / 失败（网络、401 等）都清 loggedIn / access /
 //     refresh 并清持久化 refreshToken（保留 email/userId/kdfParams 账户绑定），回 /unlock 重登。
 //     与 lock()（自动锁定，仅清会话态、保留 refresh 可快速重登）语义不同，不再互为别名。
-//   - 【仍为 mock】verifyPassword 后端尚未接入（不在本次范围），暂沿用本地模拟：mockVerifyPassword
-//     仍依赖本地持久化的明文 password（明文，仅演示！真实接入须改为本地不留可还原凭据）。故
-//     register / login / changePassword / resetPassword 成功后**仍然**把 email/password 写本地，
-//     待 verifyPassword 接入后一并清理。
+//   - 【零知识本地校验，不依赖后端】verifyPassword 用待验密码 + 本地 pwKdf 派生 KEK 试解 pwWrapped 包裹的
+//     DataKey，解包成功即密码正确——**不在本地留存任何明文密码**。故 register / login / changePassword /
+//     resetPassword 均不再把明文密码写本地，明文密码只在会话内存留存。
 //   - 会话态 loggedIn 不持久化；accessToken 仅内存；refreshToken / kdfParams 持久化（续签 / 登录用）。
 
 /** localStorage 持久化 key */
@@ -881,42 +951,50 @@ function requestVerifyCode(addr, signal) {
   return postJson('/auth/verify-code', { email: addr }, { signal }).then((res) => Boolean(res?.sent))
 }
 
-/** 读取持久化的云账户绑定（缺省 / 解析失败回落未注册） */
+/**
+ * 读取持久化的云账户绑定（缺省 / 解析失败回落未注册）。
+ * 注意：**不含明文密码**——本地仅存非机密的账户绑定 + 密文包裹（pwWrapped 等），
+ * 明文密码只在会话内存留存。旧版本可能残留 password 字段，这里一概忽略不读。
+ */
 function loadCloudAccount() {
   try {
     const raw = localStorage.getItem(CLOUD_KEY)
     if (!raw) {
-      return { email: null, password: null, userId: null, refreshToken: null, kdfParams: null, pwWrapped: null, pwKdf: null }
+      return { email: null, userId: null, refreshToken: null, kdfParams: null, pwWrapped: null, pwKdf: null, pendingRecovery: false }
     }
     const parsed = JSON.parse(raw)
     return {
       email: parsed.email ?? null,
-      password: parsed.password ?? null,
       userId: parsed.userId ?? null,
       refreshToken: parsed.refreshToken ?? null,
       kdfParams: parsed.kdfParams ?? null,
       pwWrapped: parsed.pwWrapped ?? null,
-      pwKdf: parsed.pwKdf ?? null
+      pwKdf: parsed.pwKdf ?? null,
+      // 待恢复标志持久化：重置后跳过恢复的死状态须跨刷新/重登稳定可见（不再仅靠水合推断）
+      pendingRecovery: parsed.pendingRecovery ?? false
     }
   } catch {
-    return { email: null, password: null, userId: null, refreshToken: null, kdfParams: null, pwWrapped: null, pwKdf: null }
+    return { email: null, userId: null, refreshToken: null, kdfParams: null, pwWrapped: null, pwKdf: null, pendingRecovery: false }
   }
 }
 
-/** 写回云账户绑定（隐私模式 / 配额异常时静默降级，不阻断交互） */
+/**
+ * 写回云账户绑定（隐私模式 / 配额异常时静默降级，不阻断交互）。
+ * **绝不写入明文密码**——只持久化非机密的账户绑定与密文包裹。
+ */
 function persistCloudAccount({
   email,
-  password,
   userId = null,
   refreshToken = null,
   kdfParams = null,
   pwWrapped = null,
-  pwKdf = null
+  pwKdf = null,
+  pendingRecovery = false
 }) {
   try {
     localStorage.setItem(
       CLOUD_KEY,
-      JSON.stringify({ email, password, userId, refreshToken, kdfParams, pwWrapped, pwKdf })
+      JSON.stringify({ email, userId, refreshToken, kdfParams, pwWrapped, pwKdf, pendingRecovery })
     )
   } catch {
     // 不可用时静默
@@ -971,16 +1049,6 @@ async function realLogin(addr, pwd, signal) {
   // 3) 上送后端比对；把 params 一并透出供 store 回填本地（便于离线展示等）
   const res = await postJson('/auth/login', { email: addr, verifier }, { signal })
   return { ...res, kdfParams: params }
-}
-
-/** 模拟校验当前密码：比对持久化的密码 */
-function mockVerifyPassword(pwd, signal) {
-  return delay(700, signal).then(() => {
-    const saved = loadCloudAccount()
-    if (!saved.password || pwd !== saved.password) {
-      throw new Error('密码不正确')
-    }
-  })
 }
 
 /**
@@ -1101,22 +1169,4 @@ function realLogout(accessToken, refreshToken, signal) {
     { refreshToken },
     { signal, headers: { Authorization: `Bearer ${accessToken}` } }
   )
-}
-
-/** 可被 AbortSignal 中断的延时 Promise */
-function delay(ms, signal) {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      return reject(new DOMException('Aborted', 'AbortError'))
-    }
-    const timer = setTimeout(resolve, ms)
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer)
-        reject(new DOMException('Aborted', 'AbortError'))
-      },
-      { once: true }
-    )
-  })
 }

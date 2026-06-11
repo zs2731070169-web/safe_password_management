@@ -1,6 +1,6 @@
 ---
 name: project-safevault
-description: SafeVault（密码安全助手）项目概览：纯前端 Vue3 DRD 还原，移动端 App 风格，前端工程输出在 password_assistant_ui/
+description: SafeVault（密码安全助手）项目概览：纯前端 Vue3 DRD 还原，移动端 App 风格，前端工程输出在 safevault_ui/
 metadata:
   type: project
 ---

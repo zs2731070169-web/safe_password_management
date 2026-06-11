@@ -8,6 +8,14 @@
  *  - shield-lock ：内部浅色锁孔，居中叠加于盾牌之上
  */
 import AppIcon from '@/components/icons/AppIcon.vue'
+
+const props = defineProps({
+  /** 解锁中禁用输入与切换 */
+  biometricLoginTip: {
+    type: Boolean,
+    default: false
+  }
+})
 </script>
 
 <template>
@@ -25,7 +33,7 @@ import AppIcon from '@/components/icons/AppIcon.vue'
 
     <!-- 标题 -->
     <h1 class="brand__title">密码管理小助手</h1>
-    <p class="brand__subtitle">指纹一按，密码到手</p>
+    <p v-if="biometricLoginTip" class="brand__subtitle">指纹一按，密码到手</p>
   </section>
 </template>
 

@@ -11,8 +11,7 @@ import { evaluatePasswordLevel } from '@/utils/passwordStrength'
  * 完全相同的一套强度规则（utils/passwordStrength），再叠加「重复使用」检测；
  * 健康总分由各条目强度等级融合为 0-100。
  *
- * 当前为纯前端 mock：仅安全建议（mockInsight）为固定文案，真实接入时
- * 替换 mockInsight 即可，诊断 / 算分逻辑（强度规则 + 重复检测）保持不变。
+ * 诊断 / 算分逻辑（强度规则 + 重复检测）全部基于密码库真实条目，不含任何写死的演示数据。
  *
  * 问题清单不凭空捏造：诊断只针对库中真实存在的条目，名称、修复入口均取自该条目，
  * 条目被删除 / 改强时对应问题项随之消失，健康分实时重算（DRD HLT-05）。
@@ -119,7 +118,6 @@ export const useHealthStore = defineStore('health', () => {
 
 // ===============================================================
 // 诊断与算分：基于真实条目密码，复用统一强度规则 + 重复检测
-// （仅 mockInsight 安全建议为固定文案，真实接入时替换即可）
 // ===============================================================
 
 /** 各强度等级对应的「健康得分」（融合总分时取均值） */
@@ -146,22 +144,19 @@ function countPasswords(entries) {
 /**
  * 按真实密码库条目派生问题清单
  *
- * 对每个条目用「同一套强度规则」评级，并结合重复检测给出诊断，健康条目跳过；
- * 末尾追加一条与具体条目无关的安全建议（insight）。
+ * 对每个条目用「同一套强度规则」评级，并结合重复检测给出诊断，健康条目跳过。
  *
  * @param {object[]} entries 密码库条目列表
- * @returns {object[]} 问题清单（弱 > 重复 > 中 > 建议）
+ * @returns {object[]} 问题清单（弱 > 重复 > 中）
  */
 function buildProblems(entries) {
   const pwCount = countPasswords(entries)
   const rank = { weak: 0, dup: 1, medium: 2 }
 
-  const issues = entries
+  return entries
     .map((entry) => diagnose(entry, pwCount))
     .filter(Boolean)
     .sort((a, b) => rank[a.severity] - rank[b.severity])
-
-  return [...issues, mockInsight()]
 }
 
 /**
@@ -218,17 +213,4 @@ function computeScore(entries) {
   const base = sum / entries.length
   penalty = Math.min(penalty, DUP_PENALTY_CAP)
   return Math.max(0, Math.min(100, Math.round(base - penalty)))
-}
-
-/** 安全建议（虚线卡，不针对具体条目，故无 target；真实接入时替换为本地扫描产出） */
-function mockInsight() {
-  return {
-    id: 'mfa',
-    name: '安全建议',
-    type: '我们发现您的 3 个账号尚未使用多因素验证。启用后可将安全性提升 99%。',
-    severity: 'insight',
-    tag: '',
-    icon: 'sparkles',
-    target: ''
-  }
 }

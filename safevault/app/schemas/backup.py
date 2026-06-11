@@ -108,6 +108,20 @@ class BackupMetaResponse(BaseModel):
     updatedAt: datetime | None = None
 
 
+class BackupDeleteResponse(BaseModel):
+    """删除云端备份响应体，对齐时序图 §4 `DELETE /backup` `200 { deleted: true }`（方案 A）。
+
+    幂等成功体：命中删除、本就无备份、重复删除均返回 `{ deleted: true }`——客户端可无脑重试 / 重复点击。
+    无 404：本无备份也视为「已处于已删除状态」，按成功返回（详见 services/backup.delete_backup）。
+
+    语义边界（重要）：本响应对应的是用户在设置页**显式点击「删除云端备份」危险操作并二次确认**触发的
+    彻底删除；而**关闭云备份开关只是本地停传、不调本接口**——两类操作解耦，勿混淆。
+    """
+
+    # 是否已删除。恒为 True（幂等成功）：命中删除成功 True、本无备份视为已删 True、重复删除仍 True。
+    deleted: bool = True
+
+
 class RecoveryBlobUploadRequest(BaseModel):
     """上传「恢复码包裹的 DataKey」请求体（PUT /backup/recovery-blob，覆盖式，每账户一份）。
 

@@ -30,15 +30,19 @@ const {
   autoLockLabel,
   cloudLoggedIn,
   cloudEmail,
+  pendingRecovery,
   toggleSwitch,
   toggleBiometric,
   setAutoLock,
   placeholder,
   openChangePassword,
   openRegenerateRecovery,
+  openRecoverData,
   openTrash,
   openCategories,
+  openPrivacy,
   restoreFromCloud,
+  requestDeleteBackup,
   logout,
   verify,
   onIdentityVerified,
@@ -49,6 +53,12 @@ const {
 const logoutConfirm = ref(false)
 /** 从云端恢复二次确认面板显隐 */
 const restoreConfirm = ref(false)
+
+/** 关于卡片行点击分发：隐私政策跳转独立页，其余暂为占位提示 */
+function onAboutActivate(label) {
+  if (label === '隐私政策') openPrivacy()
+  else placeholder(label)
+}
 </script>
 
 <template>
@@ -58,6 +68,23 @@ const restoreConfirm = ref(false)
       :logged-in="cloudLoggedIn"
       :email="cloudEmail"
     />
+
+    <!-- 数据待恢复横幅：重置密码后跳过了恢复，云备份/同步会静默失效；点此输入恢复码或重建 -->
+    <button
+      v-if="pendingRecovery"
+      type="button"
+      class="recover-banner"
+      @click="openRecoverData"
+    >
+      <span class="recover-banner__icon" aria-hidden="true">
+        <AppIcon name="warning" :width="18" :height="18" />
+      </span>
+      <span class="recover-banner__body">
+        <span class="recover-banner__title">数据待恢复</span>
+        <span class="recover-banner__desc">重置密码后尚未恢复，云备份与同步暂不可用。点此处理</span>
+      </span>
+      <AppIcon name="arrow-right" :size="16" class="recover-banner__arrow" />
+    </button>
 
     <!-- 【安全】关键安全项置顶 -->
     <SettingGroup title="安全">
@@ -99,12 +126,7 @@ const restoreConfirm = ref(false)
         :model-value="cloudBackup"
         @update:model-value="toggleSwitch('cloudBackup')"
       />
-      <SettingItem
-        icon="backup"
-        title="加密导出 / 导入备份"
-        @activate="placeholder('加密导出 / 导入备份')"
-      />
-      <!-- 从云端恢复备份（模块 2 GET /backup）：点击先弹底部确认面板，确认后用云端快照覆盖本地库 -->
+      <!-- 从云端恢复备份：点击先弹底部确认面板，确认后用云端快照覆盖本地库 -->
       <SettingItem
         icon="recovery-key"
         title="从云端同步备份"
@@ -120,6 +142,15 @@ const restoreConfirm = ref(false)
         title="回收站"
         :value="trashCount ? `${trashCount} 条` : ''"
         @activate="openTrash"
+      />
+      <!-- 删除云端备份（模块 2 DELETE /backup，方案 A）：危险操作，红色样式；
+           点击先弹身份验证窗口（指纹 / 主密码，同「修改密码」），验证通过才销毁云端 blob。
+           与「开启云备份」开关解耦——关开关只本地停传，唯有此处显式删除才删云端数据。 -->
+      <SettingItem
+        icon="trash"
+        title="删除云端备份"
+        danger
+        @activate="requestDeleteBackup"
       />
     </SettingGroup>
 
@@ -137,7 +168,7 @@ const restoreConfirm = ref(false)
     <!-- 【关于】信任徽章 + 隐私 / 版本 -->
     <div class="settings-content__about">
       <h2 class="settings-content__about-title">关于</h2>
-      <AboutCard version="v1.0" @activate="placeholder($event)" />
+      <AboutCard version="v1.0" @activate="onAboutActivate" />
     </div>
 
     <!-- 底部：退出登录（软登出，回登录页） -->
@@ -146,14 +177,16 @@ const restoreConfirm = ref(false)
       <span>退出登录</span>
     </button>
 
-    <!-- 敏感页前置身份验证（仅未开启指纹时出现，验证通过才跳转，避免目标页白屏） -->
+    <!-- 敏感操作前置身份验证（仅未开启指纹时出现）：修改密码 / 重新生成恢复码验证通过后跳转，
+         删除云端备份验证通过后执行删除。确认文案与色调随场景定制（删除用红色「验证并删除」）。 -->
     <IdentityVerifyModal
       :model-value="verify.visible"
       :allow-biometric="false"
       :title="verify.title"
       :hint="verify.hint"
       hint-icon="warning"
-      confirm-text="验证并继续"
+      :confirm-text="verify.confirmText"
+      :tone="verify.tone"
       @update:model-value="onIdentityVisibleChange"
       @verified="onIdentityVerified"
     />
@@ -180,6 +213,73 @@ const restoreConfirm = ref(false)
 </template>
 
 <style lang="scss" scoped>
+// 数据待恢复横幅：醒目警示底，整行可点进入恢复 / 重建
+.recover-banner {
+  @include button-reset;
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+  width: 100%;
+  padding: $spacing-sm;
+  background-color: $color-warning-soft;
+  border: 1px solid rgba($color-warning, 0.3);
+  border-radius: $radius-lg;
+  text-align: left;
+  transition:
+    filter $transition-base,
+    transform $transition-fast;
+
+  &:hover {
+    filter: brightness(0.98);
+  }
+
+  &:active {
+    transform: scale(0.995);
+  }
+
+  &:focus-visible {
+    outline: 2px solid rgba($color-warning, 0.4);
+    outline-offset: 2px;
+  }
+
+  &__icon {
+    @include flex-center;
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    border-radius: $radius-pill;
+    background-color: rgba($color-warning, 0.16);
+    color: $color-warning;
+  }
+
+  &__body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  &__title {
+    font-size: $font-size-body; // 16px
+    font-weight: $font-weight-medium;
+    line-height: $line-height-body;
+    color: $color-warning;
+  }
+
+  &__desc {
+    font-size: $font-size-caption; // 12px
+    line-height: $line-height-caption;
+    color: $color-warning;
+    opacity: 0.85;
+  }
+
+  &__arrow {
+    flex-shrink: 0;
+    color: $color-warning;
+  }
+}
+
 .settings-content {
   display: flex;
   flex-direction: column;

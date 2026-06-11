@@ -54,7 +54,7 @@ function handleRegister() {
 
     <!-- 主内容 -->
     <main class="unlock-page__main">
-      <BrandIdentity />
+      <BrandIdentity :biometricLoginTip="canBiometricLogin"/>
 
       <section class="unlock-page__biometric">
         <BiometricButton v-if="canBiometricLogin" :loading="loading" @trigger="loginByBiometric" />

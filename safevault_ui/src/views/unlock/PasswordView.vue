@@ -442,10 +442,10 @@ function handleBack() {
 
   // 新用户注册（品牌色，正向 CTA）
   &--register {
-    color: $color-brand;
+    color: rgba($color-brand, 0.8);
 
-    &:hover:not(:disabled) {
-      background-color: rgba($color-brand, 0.06);
+    &:hover {
+      color: rgba($color-brand, 1);
     }
 
     &:disabled {
