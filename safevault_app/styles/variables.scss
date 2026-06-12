@@ -1,0 +1,247 @@
+// =============================================================
+// 设计 Token（Design Tokens）
+// 来源：Figma「白君's team library / 启动·解锁页」(node 3312:925)
+// 所有数值均从设计稿精确提取，业务样式禁止硬编码，统一引用此处变量。
+//
+// 【结构性 Token】背景 / 文字 / 边框以 `var(--xxx, 浅色)` 形式定义：
+//   - 深色模式已移除，无任何地方再覆盖这些 CSS 变量，故一律回落到括号内的浅色值，
+//     与原设计稿完全一致；保留 var() 外壳是为便于将来按需重新接入换肤。
+//   - 因 SCSS `rgba()` 无法作用于 CSS 变量，被 var 化 Token 的半透明用法
+//     改引下方 companion 字面量（$shadow-ink / $line-base / $color-bg-frost）。
+//   品牌色 / 语义色 / 图块色等为字面量。
+// =============================================================
+
+// ---------------------------------------------------------------
+// 主题化 companion 字面量（供「被 var 化 Token」的 rgba 半透明用法引用）
+// ---------------------------------------------------------------
+$shadow-ink: #151c27; // 阴影墨色（深浅模式都用暗色阴影，与 $color-text-strong 浅色值同源）
+$line-base: #bdc2d1; // 分隔线 / hairline 描边基色（半透明，浅灰在深浅面上均可读，与 $color-border 浅色值同源）
+
+// ---------------------------------------------------------------
+// 颜色（Color）
+// ---------------------------------------------------------------
+// —— 品牌主色 ——
+$color-brand: #2563eb; // 主品牌蓝（Logo / 主按钮 / 强调文字）
+$color-brand-bright: #2563eb; // 亮品牌蓝（顶栏 Logo 方块底 / 底部导航选中态）
+$color-brand-soft: #f0f3ff; // 盾牌图标圆形浅蓝底
+$color-brand-pale: #e2e8f8; // 底部信任徽章背景
+$color-brand-glow: rgba(0, 74, 198, 0.05); // 背景氛围光晕（蓝）
+$color-health-glow: rgba(124, 249, 148, 0.1); // 背景氛围光晕（绿，主密码解锁页右下）
+$color-on-brand: #eeefff; // 亮蓝底上的文字（底部导航选中文字）
+
+// —— 健康分徽章（顶栏右侧） ——
+$color-health-bg: #7cf994; // 健康分徽章浅绿底
+$color-health-text: #007230; // 健康分徽章绿色文字
+
+// —— 文本（可主题化） ——
+$color-text-strong: var(--color-text-strong, #151c27); // 主标题（密码管理小助手）
+$color-text-regular: var(--color-text-regular, #434655); // 次要正文 / 徽章文字
+$color-text-warn: #824500; // 警示链接（忘记主密码？，深浅共用）
+
+// —— 中性 / 边框（可主题化） ——
+$color-border: var(--color-border, #bdc2d1); // 次要按钮描边 / 分隔线
+$color-success: #006e2d; // 底部锁图标（数据已本地加密）
+$color-white: #ffffff;
+
+// —— 文本（密码库扩展，可主题化） ——
+$color-text-muted: var(--color-text-muted, #737686); // 弱化文字（账号 / 占位 / 次要说明）
+$color-text-placeholder: var(--color-text-placeholder, #9aa0b4); // 输入框占位
+
+// —— 语义状态色（健康度 / 标签，来源 DESIGN.md「红绿灯」逻辑） ——
+$color-danger: #ba1a1a; // 危险 / 弱密码 / 删除
+$color-danger-soft: #ffdad6; // 危险底色（标签 / 角标背景）
+$color-warning: #824500; // 警告 / 临期（深棕，用于文字 / 图标 / 强调条）
+$color-warning-soft: #ffecc7; // 警告浅底（黄 / 琥珀，重要提示框背景）
+$color-success-strong: #006e2d; // 成功（强密码 / 复制成功）
+
+// —— 健康分档色（健康度仪表盘进度 / 大数字 / 档位文字；分档区间见 DRD 2.1.3） ——
+$color-score-strong: #16a34a; // 优秀 90-100（绿）
+$color-score-good: #d97706; // 良好 60-89（黄）—— 健康页 86 分档位
+$color-score-weak: #ba1a1a; // 需改善 0-59（红）
+
+// —— 强调链接深蓝（SafeVault Logo / 立即修改 / 重新扫描 / 安全建议标题；与 $color-brand-glow 同源 #004ac6） ——
+$color-link: #004ac6;
+
+// —— 警告容器底（重复 / 警告类问题标签与图标圆底，琥珀；区别于 $color-warning-soft #ffecc7） ——
+$color-warning-container: #ffdcc3;
+
+// —— 平台图标卡片底色（密码条目左侧圆角方块，柔和分色提升可辨识度） ——
+$color-tile-blue: #e7eefe;
+$color-tile-green: #dcf6e1;
+$color-tile-orange: #ffe7d1;
+$color-tile-red: #ffe1e0;
+$color-tile-purple: #ece2fb;
+$color-tile-gray: #e8eaf2;
+
+// —— 背景 ——
+$color-overlay: rgba(21, 28, 39, 0.45); // 模态弹窗遮罩（置灰背景，取主文字深色调更柔和，深浅共用）
+$color-bg-page: var(--color-bg-page, #f9f9ff); // 页面背景（可主题化）
+$color-bg-header: var(--color-bg-header, #f9f9ff); // 顶部导航背景（可主题化）
+$color-bg-card: var(--color-bg-card, #ffffff); // 卡片 / 列表项背景（可主题化）
+$color-bg-input: var(--color-bg-input, #f0f3ff); // 搜索框 / 输入框填充（可主题化）
+$color-track: var(--color-track, #dce2f3); // 滑块轨道底（密码生成器长度滑块，Figma node 1:872）
+$color-bg-chip: var(--color-bg-chip, #ffffff); // 分类筛选 chip 默认底
+$color-bg-tabbar: var(--color-bg-tabbar, rgba(249, 249, 255, 0.92)); // 底部导航毛玻璃底
+$color-bg-glass: var(--color-bg-glass, rgba(255, 255, 255, 0.7)); // 主密码解锁页生物识别卡毛玻璃底
+// 毛玻璃页脚底（新增页保存栏，半透明覆盖在内容上；从原 rgba($color-bg-page, 0.8) 提取为独立可主题化 Token）
+$color-bg-frost: var(--color-bg-frost, rgba(249, 249, 255, 0.8));
+
+// ---------------------------------------------------------------
+// 字体（Typography）
+// 设计稿使用文泉驿正黑（中文）/ Inter（英文 Logo）。
+// 工程中以系统中文字体优雅降级，保证还原度与可用性。
+// ---------------------------------------------------------------
+$font-family-base:
+  'Inter', 'PingFang SC', 'Microsoft YaHei', 'WenQuanYi Zen Hei',
+  -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+
+// 字号 / 行高（与 Figma 一一对应）
+$font-size-logo: 16px; // Logo「SafeVault」
+$line-height-logo: 28px;
+
+$font-size-title: 24px; // 主标题
+$line-height-title: 32px;
+
+$font-size-heading: 20px; // 页面级小标题（恢复码 / 引导主标题，Figma node 1:17）
+$line-height-heading: 28px;
+
+$font-size-body: 16px; // 副标题 / 主密码按钮文字
+$line-height-body: 24px;
+
+$font-size-action: 15px; // 主行动按钮文字（密码生成器「保存规则」，Figma node 1:924）
+$line-height-action: 28px;
+
+$font-size-input: 18px; // 主密码输入框文字（Figma node 1:548）
+
+$font-size-caption: 12px; // 忘记主密码 / 信任徽章
+$line-height-caption: 16px;
+
+$font-size-micro: 10px; // 详情页复制角标 / 倒计时数字
+$line-height-micro: 15px;
+
+$font-size-display: 30px; // 健康分大数字（DRD Type Scale · Display）
+$line-height-display: 40px;
+
+// —— 密码库扩展字号 ——
+$font-size-list-title: 15px; // 列表项平台名称（DESIGN.md title-md）
+$line-height-list-title: 24px;
+$font-size-sm: 14px; // 账号 / 次要正文（DESIGN.md body-sm）
+$line-height-sm: 20px;
+$font-size-section: 13px; // 分组标题（如「全部」计数）
+$line-height-section: 18px;
+
+// —— 敏感数据等宽字体（密码 / 恢复码 / 2FA） ——
+$font-family-mono:
+  'JetBrains Mono', 'SFMono-Regular', 'Roboto Mono', 'Menlo', 'Consolas',
+  monospace;
+
+$font-weight-regular: 400;
+$font-weight-medium: 400;
+$font-weight-bold: 700;
+
+$letter-spacing-caption: 1.2px; // 12px 文案字间距
+$letter-spacing-title-tight: -0.5px; // 主密码解锁标题紧凑字间距
+$letter-spacing-input: 0.9px; // 主密码输入框占位字间距
+$letter-spacing-code: 1.8px; // 恢复码输入等宽字间距（Figma node 2:66）
+$letter-spacing-label: 0.6px; // 详情页字段标签（ACCOUNT/URL…）等宽大写字间距
+$letter-spacing-value: 0.9px; // 详情页账号 / 密码等宽值字间距
+
+// ---------------------------------------------------------------
+// 间距（Spacing）
+// ---------------------------------------------------------------
+$spacing-xxs: 4px; // 最小间距：强度计 / 步骤进度条分段间隙
+$spacing-xs: 8px;
+$spacing-2xs: 10px; // 介于 xs(8) 与 sm(16) 之间：恢复码页图标徽章上间距 / 段落 gap / KEY 标签内距
+$spacing-sm: 16px;
+$spacing-md: 18px;
+$spacing-lg: 24px;
+$spacing-top: 0px;
+$spacing-xl: 32px;
+$spacing-2xl: 40px;
+$spacing-3xl: 48px;
+
+// ---------------------------------------------------------------
+// 圆角（Border Radius）
+// ---------------------------------------------------------------
+$radius-sm: 8px; // 标签 / 角标 / 平台图标方块小圆角
+$radius-md: 12px; // 次要按钮 / 卡片 / 输入框
+$radius-lg: 16px; // 大卡片 / 底部弹窗
+$radius-xl: 24px; // 超大卡（健康度仪表盘卡）
+$radius-pill: 9999px; // 胶囊 / 圆形 / 搜索框 / FAB / chip
+
+// ---------------------------------------------------------------
+// 阴影（Shadow）
+// ---------------------------------------------------------------
+// 盾牌图标轻微投影
+$shadow-shield: 0px 1px 1px rgba(0, 0, 0, 0.05);
+// 生物识别按钮悬浮阴影 / 品牌徽标方块阴影
+$shadow-biometric:
+  0px 10px 15px -3px rgba(0, 0, 0, 0.1),
+  0px 4px 6px -4px rgba(0, 0, 0, 0.1);
+// 主密码解锁主按钮阴影（Figma node 1:556）
+$shadow-button:
+  0px 4px 6px -1px rgba(0, 0, 0, 0.1),
+  0px 2px 4px -2px rgba(0, 0, 0, 0.1);
+// 毛玻璃卡片轻投影（Figma node 1:562）
+$shadow-glass-card: 0px 1px 2px rgba(0, 0, 0, 0.05);
+
+// 列表卡片轻投影（DESIGN.md Level 1，6% 不透明度）
+$shadow-card: 0px 1px 3px rgba(21, 28, 39, 0.06), 0px 1px 2px rgba(21, 28, 39, 0.04);
+// FAB 悬浮投影（DESIGN.md Level 2）
+$shadow-fab:
+  0px 8px 16px -4px rgba(0, 74, 198, 0.32),
+  0px 4px 8px -4px rgba(0, 74, 198, 0.24);
+// FAB 中性投影（Figma node 1:1055，与设计稿一致）
+$shadow-fab-neutral:
+  0px 20px 25px -5px rgba(0, 0, 0, 0.1),
+  0px 8px 10px -6px rgba(0, 0, 0, 0.1);
+// 底部导航分隔投影
+$shadow-tabbar: 0px -1px 0px rgba(21, 28, 39, 0.06);
+// 主行动按钮品牌色投影（密码生成器「保存规则」，Figma node 1:923）
+$shadow-cta:
+  0px 10px 15px -3px rgba(0, 74, 198, 0.2),
+  0px 4px 6px -4px rgba(0, 74, 198, 0.2);
+
+// ---------------------------------------------------------------
+// 尺寸 / 布局（Sizing & Layout）
+// ---------------------------------------------------------------
+$layout-canvas-max-width: 390px; // 移动端画布宽度
+$layout-content-max-width: 448px; // 主内容最大宽度
+$layout-header-height: 54px; // 顶部导航高度
+
+$size-shield: 128px; // 中央盾牌圆
+$size-shield-inner: 56px; // 盾牌内层图标
+$size-biometric: 88px; // 生物识别圆形按钮
+
+// —— 密码库布局 ——
+$layout-tabbar-height: 64px; // 底部导航高度
+$layout-page-padding: 16px; // 页面左右内边距（移动端 margin）
+$size-tile: 44px; // 列表项平台图标方块
+$size-fab: 56px; // 悬浮新增按钮
+$size-touch-min: 38px; // 最小可点击命中区（无障碍）
+$size-search-height: 44px; // 搜索框高度
+
+// —— 设置页布局（DRD 4.12） ——
+$size-setting-row: 56px; // 设置项行最小高度（保证 64dp 级热区与可读，含上下内距）
+$size-setting-icon-tile: 36px; // 设置项行首图标圆角方块
+
+// —— 安全区：状态栏 / 刘海避让 ——
+// App 端优先用 uni-app 内置 var(--status-bar-height)（Android/iOS 真实状态栏高度），
+// iOS 刘海再用 env(safe-area-inset-top) 兜底；H5 / PC 两者皆 0，顶栏不额外留白。
+// 注：App 端（尤其 Android）env(safe-area-inset-top) 常返回 0，必须叠加 status-bar-height 才可靠。
+// 用法：height: calc(#{$layout-header-height} + #{$safe-area-top}); padding-top: $safe-area-top;
+// max() 含 env()/var() 参数，Dart Sass 自动作纯 CSS 透传，无需 unquote。
+$safe-area-top: max(env(safe-area-inset-top), var(--status-bar-height, 0px));
+
+// ---------------------------------------------------------------
+// 动效（Motion）
+// ---------------------------------------------------------------
+$transition-base: 0.2s ease;
+$transition-fast: 0.15s ease;
+
+// ---------------------------------------------------------------
+// 层级（z-index）
+// ---------------------------------------------------------------
+$z-bg-glow: 0; // 背景光晕
+$z-content: 1; // 内容层
+$z-overlay: 1000; // 模态弹窗 / 遮罩层

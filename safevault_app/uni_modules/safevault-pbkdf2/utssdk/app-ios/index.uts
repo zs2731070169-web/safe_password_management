@@ -1,0 +1,40 @@
+/**
+ * 原生 PBKDF2-HMAC-SHA256（iOS / Swift，经 UTS 编译进自定义基座）
+ *
+ * 现状：**iOS 端暂为占位实现**，返回空串。JS 侧启动自检拿到空串即判定不一致并**回落 noble**
+ *（纯 JS，正确但较慢——强度不降，仍是 60 万次迭代）。
+ *
+ * 为何暂不落地：iOS 原生 PBKDF2 走 CommonCrypto 的 `CCKeyDerivationPBKDF`（C 指针接口），
+ * 经 UTS/Swift 调用涉及 UnsafePointer 互操作，需在 **iOS 真机**逐步验证编译与逐位一致，
+ * 当前无 iOS 设备可验证。占位返回空串可保证：① iOS 自定义基座能正常编译打包；② iOS 运行时
+ * 安全回落 noble，功能与跨端密文互通不受影响。待有 iOS 真机时，把下方注释里的 CommonCrypto
+ * 实现补全替换即可（password 用 .utf8 字节，与 noble 逐位一致；同样由 JS 自检兜底）。
+ *
+ * 参考实现骨架（待真机验证）：
+ *   import Foundation
+ *   import CommonCrypto
+ *   let pwd = Array(password.utf8)
+ *   let salt = [UInt8](Data(base64Encoded: saltBase64)!)
+ *   var dk = [UInt8](repeating: 0, count: dkLen)
+ *   CCKeyDerivationPBKDF(CCPBKDFAlgorithm(kCCPBKDF2), password, pwd.count,
+ *                        salt, salt.count, CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA256),
+ *                        UInt32(iterations), &dk, dk.count)
+ *   return Data(dk).base64EncodedString()
+ */
+
+/**
+ * 派生 PBKDF2-HMAC-SHA256（iOS 占位：返回空串触发 JS 侧回落 noble）。
+ * @param password 明文密码字符串
+ * @param saltBase64 盐的 base64
+ * @param iterations 迭代次数
+ * @param dkLenBytes 派生输出字节数
+ * @returns 空串（占位）；真机补全后返回派生字节的 base64
+ */
+export function pbkdf2HmacSha256(
+	password: string,
+	saltBase64: string,
+	iterations: number,
+	dkLenBytes: number
+): string {
+	return "";
+}

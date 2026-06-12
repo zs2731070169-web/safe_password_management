@@ -17,3 +17,6 @@ venv/
 
 # 日志
 *.log
+
+# Claude 本地记忆/配置，不入库
+.claude/

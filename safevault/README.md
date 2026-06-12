@@ -142,6 +142,14 @@ uv run uvicorn main:app --reload --port 8000
 uv run python -m comsumer.mail
 ```
 
+> 📱 **手机 / 真机经内网访问后端**：上面默认绑 `127.0.0.1`（仅本机回环，手机连不上）。
+> 改加 `--host 0.0.0.0` 监听全部网卡，前端 `.env` 的 `VITE_API_BASE_URL` 填本机内网 IP：
+> ```bash
+> uv run uvicorn main:app --reload --host 0.0.0.0 --port 8000
+> ```
+> 本机内网 IP 查法：`ipconfig getifaddr en0`（Wi-Fi）/ `en1`；手机需与本机同一局域网。
+> 首次 `0.0.0.0` 启动 macOS 可能弹防火墙询问，选「允许」。
+
 > 本地 / 演示想少开一个终端：在 `.env` 设 `RUN_CONSUMER_INLINE=true`，
 > 消费者会随 web 进程在 lifespan 内一起启动，无需终端 B。
 > ⚠️ 生产环境保持独立进程，且切勿在 `uvicorn --workers N` / 多副本下开启内联，

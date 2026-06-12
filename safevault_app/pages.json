@@ -1,0 +1,161 @@
+{
+	// ===================================================================
+	// SafeVault uni-app 路由表
+	// -------------------------------------------------------------------
+	// 由源工程（safevault_ui）vue-router 的 router/index.js 导航语义映射而来。
+	//
+	// 映射规则：
+	//   1) 动态段 :id 改 query —— uni-app 不支持路径动态段，详情 / 编辑统一用
+	//      uni.navigateTo({ url: 'pages/detail/index?id=xxx' }) 传参，页面 onLoad(query) 取值。
+	//   2) 全屏流程页（登录 / 开户 / 重置）—— navigationStyle: custom 自绘顶栏，
+	//      对应源工程 meta.fullscreen。
+	//   3) 自右弹出页（SHEET_ROUTES：详情 / 新增 / 编辑 / 修改密码 / 恢复码 / 回收站 /
+	//      分类管理 / 隐私政策 / 账户密码登录 / 开户 / 重置）—— app-plus.animationType: pop-in，
+	//      呼应源工程 sheet-right 自右滑入；离场默认 pop-out 向右滑回。
+	//      另显式 popGesture: "none" 关闭原生侧滑返回：原生侧滑与自定义 pop-in 动画配合时
+	//      「第一次侧滑常被吞掉、第二次才识别」，故改由 useSheetDismiss 的 JS 边缘左滑手势独占
+	//      收回（第一次即生效、带跟手动画），原生侧滑关闭后也不再与 JS 手势双触发连退两层；
+	//      系统返回键仍由框架内置返回栈处理（navigateBack 收回 / 根页再按一次退出）。
+	//   4) 四个 Tab（库 / 健康 / 生成 / 设置）—— 不用 uni 原生 tabBar，沿用源工程自绘底栏
+	//      （AppTabBar）方案，注册为普通 page，底栏与滑动过渡在阶段 4 的视图层实现。
+	//
+	// 启动页为 pages 数组第一项：源工程 / 重定向至 /unlock，故 unlock 即首屏入口。
+	// 登录态守卫（requiresUnlock / hasAccount）原由 router.beforeEach 承担，
+	// uni-app 改用页面级 onLoad 守卫 + 全局 addInterceptor，于阶段 4 接入。
+	// ===================================================================
+	"pages": [
+		{
+			// 登录页（首屏入口）—— 源 Unlock /unlock，meta.fullscreen
+			"path": "pages/unlock/index",
+			"style": {
+				"navigationStyle": "custom",
+				"navigationBarTitleText": "登录 SafeVault"
+			}
+		},
+		{
+			// 账户密码登录 —— 源 MasterPassword /unlock/master，fullscreen + sheet
+			"path": "pages/unlock/master",
+			"style": {
+				"navigationStyle": "custom",
+				"navigationBarTitleText": "账户密码登录",
+				"app-plus": { "animationType": "pop-in", "popGesture": "none" }
+			}
+		},
+		{
+			// 创建云账户（开户）—— 源 Onboarding /onboarding，fullscreen + sheet
+			"path": "pages/onboarding/index",
+			"style": {
+				"navigationStyle": "custom",
+				"navigationBarTitleText": "创建云账户",
+				"app-plus": { "animationType": "pop-in", "popGesture": "none" }
+			}
+		},
+		{
+			// 忘记密码·重置 —— 源 ResetPassword /recovery，fullscreen + sheet
+			"path": "pages/recovery/reset",
+			"style": {
+				"navigationStyle": "custom",
+				"navigationBarTitleText": "重置密码",
+				"app-plus": { "animationType": "pop-in", "popGesture": "none" }
+			}
+		},
+		{
+			// 主导航单页外壳（home）—— 库 / 健康 / 生成 / 设置四 Tab 并入此单页。
+			// 由原四个独立 Tab page（pages/{vault,health,generate,settings}/index）合并而来：
+			// 原「独立页 + reLaunch 切 Tab」会重建目标页、闪出空白割裂，且无横滑过渡；
+			// 改为单页 + 原生 <swiper>（四 swiper-item 常驻挂载），实现无缝横滑切换。
+			// 各 Tab 内容组件：pages/<feature>/XxxTab.vue，由本页 swiper 承载。
+			// 落地 Tab 经 ?tab=vault|health|generate|settings 指定（onLoad 读取，缺省=库）。
+			"path": "pages/home/index",
+			"style": {
+				"navigationStyle": "custom",
+				"navigationBarTitleText": "密码安全助手"
+			}
+		},
+		{
+			// 密码详情 —— 源 PasswordDetail /vault/:id（:id 改 query），sheet
+			"path": "pages/detail/index",
+			"style": {
+				"navigationStyle": "custom",
+				"navigationBarTitleText": "密码详情",
+				"app-plus": { "animationType": "pop-in", "popGesture": "none" }
+			}
+		},
+		{
+			// 新增 / 编辑密码 —— 源 AddPassword /vault/add 与 EditPassword /vault/:id/edit
+			// 共用一页：带 query ?id=xxx 即编辑模式（复用源 AddPasswordView 的双模式逻辑），sheet
+			"path": "pages/add/index",
+			"style": {
+				"navigationStyle": "custom",
+				"navigationBarTitleText": "新增密码",
+				"app-plus": { "animationType": "pop-in", "popGesture": "none" }
+			}
+		},
+		{
+			// 修改账户密码 —— 源 ChangeMasterPassword /settings/change-password，sheet
+			"path": "pages/change-password/index",
+			"style": {
+				"navigationStyle": "custom",
+				"navigationBarTitleText": "修改账户密码",
+				"app-plus": { "animationType": "pop-in", "popGesture": "none" }
+			}
+		},
+		{
+			// 重新生成恢复码 —— 源 RegenerateRecovery /settings/recovery-code，sheet
+			"path": "pages/recovery/regenerate",
+			"style": {
+				"navigationStyle": "custom",
+				"navigationBarTitleText": "重新生成恢复码",
+				"app-plus": { "animationType": "pop-in", "popGesture": "none" }
+			}
+		},
+		{
+			// 恢复数据·再入口 —— 源 RecoverData /settings/recover-data，sheet
+			"path": "pages/recovery/recover",
+			"style": {
+				"navigationStyle": "custom",
+				"navigationBarTitleText": "恢复数据",
+				"app-plus": { "animationType": "pop-in", "popGesture": "none" }
+			}
+		},
+		{
+			// 回收站 —— 源 Trash /settings/trash，sheet
+			"path": "pages/trash/index",
+			"style": {
+				"navigationStyle": "custom",
+				"navigationBarTitleText": "回收站",
+				"app-plus": { "animationType": "pop-in", "popGesture": "none" }
+			}
+		},
+		{
+			// 分类管理 —— 源 CategoryManage /vault/categories，sheet
+			"path": "pages/categories/index",
+			"style": {
+				"navigationStyle": "custom",
+				"navigationBarTitleText": "分类管理",
+				"app-plus": { "animationType": "pop-in", "popGesture": "none" }
+			}
+		},
+		{
+			// 隐私政策 —— 源 PrivacyPolicy /settings/privacy，sheet（公开内容）
+			"path": "pages/about/privacy",
+			"style": {
+				"navigationStyle": "custom",
+				"navigationBarTitleText": "隐私政策",
+				"app-plus": { "animationType": "pop-in", "popGesture": "none" }
+			}
+		}
+	],
+	"globalStyle": {
+		"navigationBarTextStyle": "black",
+		"navigationBarTitleText": "SafeVault · 密码安全助手",
+		"navigationBarBackgroundColor": "#F9F9FF",
+		"backgroundColor": "#F9F9FF",
+		// App 端关闭原生页面回弹（橡皮筋）：内容铺满一屏时不再能上下拖动；
+		// 内容真正超出视口时仍可正常滚动（bounce 只去掉过度滚动的弹性，不影响真实滚动）。
+		"app-plus": {
+			"bounce": "none"
+		}
+	},
+	"uniIdRouter": {}
+}

@@ -1,0 +1,63 @@
+{
+  "id": "safevault-pbkdf2",
+  "displayName": "safevault 原生 PBKDF2",
+  "version": "1.0.0",
+  "description": "原生 PBKDF2-HMAC-SHA256（UTS）——App 端用系统加密库加速登录派生，替代纯 JS(noble) 的数秒级耗时；跨端逐位兼容由 JS 侧启动自检兜底",
+  "keywords": ["pbkdf2", "crypto", "uts"],
+  "engines": {
+    "HBuilderX": "^3.99"
+  },
+  "dcloudext": {
+    "type": "uts",
+    "sale": {
+      "regular": { "price": "0.00" },
+      "sourcecode": { "price": "0.00" }
+    },
+    "contact": { "qq": "" },
+    "declaration": {
+      "ads": "无",
+      "data": "插件本地计算密钥派生，不采集、不上传任何数据",
+      "permissions": "无"
+    },
+    "npmurl": ""
+  },
+  "uni_modules": {
+    "dependencies": [],
+    "encrypt": [],
+    "platforms": {
+      "cloud": {
+        "tcb": "n",
+        "aliyun": "n",
+        "alipay": "n"
+      },
+      "client": {
+        "Vue": {
+          "vue2": "n",
+          "vue3": "y"
+        },
+        "App": {
+          "app-android": {
+            "minVersion": "21"
+          },
+          "app-ios": {
+            "minVersion": "9"
+          }
+        },
+        "H5-mobile": {
+          "Safari": "n",
+          "Android Browser": "n",
+          "微信浏览器(Android)": "n",
+          "QQ浏览器(Android)": "n"
+        },
+        "H5-pc": {
+          "Chrome": "n",
+          "IE": "n",
+          "Edge": "n",
+          "Firefox": "n",
+          "Safari": "n"
+        },
+        "小程序-微信": { "运行": "n" }
+      }
+    }
+  }
+}

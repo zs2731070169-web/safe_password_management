@@ -1,0 +1,41 @@
+/**
+ * 原生 PBKDF2-HMAC-SHA256（Android / Kotlin，经 UTS 编译进自定义基座）
+ *
+ * 用系统 `javax.crypto` 的 `PBKDF2WithHmacSHA256`（底层 BoringSSL，60 万次迭代仅几十毫秒），
+ * 替代 App 逻辑层纯 JS(noble) 的数秒级派生，加速登录。这里是真正的 Kotlin 原生代码，
+ * **没有 plus.android 反射「char[] 过不了桥」的限制**——`String.toCharArray()` 直接是 Kotlin CharArray。
+ *
+ * I/O 一律走 base64 字符串 / 普通字符串过桥，避免 JS↔UTS 的二进制数组编组：
+ *   - password：明文密码字符串。toCharArray 后由 Conscrypt 按 **UTF-8** 编码成字节，与 noble 用的
+ *     UTF-8 字节一致；该一致性由 JS 侧启动自检（含中文向量）逐位比对兜底，不一致即回落 noble。
+ *   - saltBase64：盐的 base64。
+ *   - 返回：派生字节的 base64（NO_WRAP，无换行）。
+ *
+ * 仅 App 端用；H5/小程序由上游原生 WebCrypto/noble 处理，不经此。
+ */
+
+import SecretKeyFactory from 'javax.crypto.SecretKeyFactory';
+import PBEKeySpec from 'javax.crypto.spec.PBEKeySpec';
+import Base64 from 'android.util.Base64';
+
+/**
+ * 派生 PBKDF2-HMAC-SHA256。
+ * @param password 明文密码字符串（仅本函数内用于派生，不留存、不外泄）
+ * @param saltBase64 盐的 base64
+ * @param iterations 迭代次数
+ * @param dkLenBytes 派生输出字节数
+ * @returns 派生字节的 base64
+ */
+export function pbkdf2HmacSha256(
+	password: string,
+	saltBase64: string,
+	iterations: number,
+	dkLenBytes: number
+): string {
+	const salt = Base64.decode(saltBase64, Base64.DEFAULT);
+	// PBEKeySpec(char[], byte[], int iterationCount, int keyLengthBits)；keyLength 以 bit 计
+	const spec = new PBEKeySpec(password.toCharArray(), salt, iterations.toInt(), dkLenBytes.toInt() * 8);
+	const factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+	const dk = factory.generateSecret(spec).getEncoded();
+	return Base64.encodeToString(dk, Base64.NO_WRAP);
+}

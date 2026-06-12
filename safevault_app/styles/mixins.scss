@@ -1,0 +1,59 @@
+// =============================================================
+// SCSS Mixins —— 复用样式片段
+// 仅放纯样式工具，不依赖具体业务。
+// =============================================================
+
+// mixin 内部用到设计 Token 变量，需显式引入（@use 作用域隔离，不随全局注入共享）
+@use 'variables' as *;
+
+// 弹性盒：水平垂直居中
+@mixin flex-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+// 弹性盒：纵向排列并居中
+@mixin flex-col-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+// 单行文本省略
+@mixin text-ellipsis {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+// 圆形容器
+@mixin circle($size) {
+  width: $size;
+  height: $size;
+  border-radius: $radius-pill;
+}
+
+// 绝对定位铺满父级
+@mixin absolute-fill {
+  position: absolute;
+  inset: 0;
+}
+
+// 移除按钮默认样式
+@mixin button-reset {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
+
+  // 清掉 uni-app 内置 <button> 组件自带的 ::after 伪元素边框
+  &::after {
+    border: none;
+  }
+}

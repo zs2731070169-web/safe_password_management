@@ -116,6 +116,13 @@ class Settings(BaseSettings):
     # 超限抛 BackupTooLargeError(413)，前端据此提示清理过多条目 / 附件。
     backup_max_size_bytes: int = 5 * 1024 * 1024
 
+    # ---------- CORS（跨域）----------
+    # 允许跨域访问的前端来源，逗号分隔；默认 "*" 放行所有来源（开发联调友好）。
+    # H5（浏览器）以绝对地址跨源访问后端时需要它；App（uni.request 原生请求）不走 CORS、无影响。
+    # 本服务认证走 Authorization: Bearer 头（非 Cookie），无需携带凭据，故可安全使用 "*"。
+    # 生产收紧时用 .env 的 CORS_ALLOW_ORIGINS 指定白名单（如 "https://app.example.com,https://www.example.com"）。
+    cors_allow_origins: str = "*"
+
     model_config = SettingsConfigDict(
         env_file=_ENV_FILE,
         env_file_encoding="utf-8",

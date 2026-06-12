@@ -2,14 +2,18 @@
 
 负责：lifespan 内启停 MySQL / Redis / RabbitMQ 连接、注册路由与业务异常处理器。
 启动（在 app/ 目录下）：uvicorn main:app --reload --port 8000
+  仅本机联调用上面即可（默认绑 127.0.0.1）；需手机/真机经内网访问时加 --host 0.0.0.0：
+  uvicorn main:app --reload --host 0.0.0.0 --port 8000
 """
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from api.auth import router as auth_router
 from api.backup import router as backup_router
+from config import settings
 from client.db_client import close_db, init_db
 from client.mq_client import init_mq, close_mq
 from client.oss_client import close_oss, init_oss
@@ -50,6 +54,18 @@ app = FastAPI(
 
 # 注册业务异常处理器（CooldownError / RateLimitError / Backup* → 对应状态码）
 register_exception_handlers(app)
+
+# 跨域配置：H5（浏览器）以绝对地址跨源访问后端时需要；App（uni.request 原生请求）不经 CORS、无影响。
+# 来源白名单取自 settings.cors_allow_origins（逗号分隔，默认 "*"）。认证走 Authorization: Bearer 头
+# （非 Cookie），故 allow_credentials=False，可安全放行 "*"；放行所有方法与请求头以覆盖预检（OPTIONS）。
+_cors_origins = [o.strip() for o in settings.cors_allow_origins.split(",") if o.strip()] or ["*"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # 全部业务接口统一挂在 /safevault 根下
 API_ROOT = "/safevault"

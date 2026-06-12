@@ -27,6 +27,7 @@ dependencies = [
     # Brevo 事务邮件 HTTP API 调用（运行时发信；测试 TestClient 亦复用 httpx）
     "httpx>=0.28.1",
     "pyjwt>=2.13.0",
+    "pyngrok>=8.1.2",
 ]
 
 [dependency-groups]
