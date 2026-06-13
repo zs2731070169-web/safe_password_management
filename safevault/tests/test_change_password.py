@@ -20,12 +20,12 @@ from models.account import Account
 from services.change_password import change_password
 from services.token import _token_version_key, _whitelist_key
 
-from conftest import client_verifier_for, create_account, make_kdf_params
+from conftest import create_account, seal_password
 
 
 async def test_change_password_success_invalidates_all_sessions(session, fake_redis):
     """改密成功：version 自增 + 落库 + 清 refresh + 刷新缓存 + 不返回 token。"""
-    account, old_verifier = await create_account(
+    account, old_password = await create_account(
         session, password="OldPass@2024", token_version=3
     )
     old_password_verifier = account.password_verifier
@@ -35,13 +35,11 @@ async def test_change_password_success_invalidates_all_sessions(session, fake_re
     await fake_redis.sadd(_whitelist_key(account.id), "jti-device-a", "jti-device-b")
     await fake_redis.set(_token_version_key(account.id), 3)
 
-    new_verifier = client_verifier_for("NewPass@2025")
     result = await change_password(
         session=session,
         user_id=account.id,
-        old_verifier=old_verifier,
-        verifier=new_verifier,
-        kdf_params=make_kdf_params("new-salt"),
+        sealed_old_password=seal_password(old_password),
+        sealed_new_password=seal_password("NewPass@2025"),
     )
 
     # 1) 响应语义：改密成功即「需重新登录」，不含任何 token
@@ -53,10 +51,9 @@ async def test_change_password_success_invalidates_all_sessions(session, fake_re
     refreshed = await session.get(Account, account.id)
     assert refreshed.token_version == 4
 
-    # 3) verifier / server_salt / kdf_params 真实更新（换了新盐，密文随之不同）
+    # 3) server_salt / password_verifier 真实更新（换了新盐，慢哈希随之不同）
     assert refreshed.server_salt != old_server_salt
     assert refreshed.password_verifier != old_password_verifier
-    assert refreshed.kdf_params["salt"] == "new-salt"
 
     # 4) refresh 白名单被 DEL 清空：两台设备的旧 refresh 续签都将 SISMEMBER 落空
     assert await fake_redis.exists(_whitelist_key(account.id)) == 0
@@ -65,7 +62,7 @@ async def test_change_password_success_invalidates_all_sessions(session, fake_re
     assert await fake_redis.get(_token_version_key(account.id)) == "4"
 
 
-async def test_change_password_wrong_old_verifier_rejected(session, fake_redis):
+async def test_change_password_wrong_old_password_rejected(session, fake_redis):
     """旧密码不正确：抛 OldPasswordError，且不改库、不动 version、不清 refresh。"""
     account, _correct_old = await create_account(
         session, password="OldPass@2024", token_version=1
@@ -73,14 +70,12 @@ async def test_change_password_wrong_old_verifier_rejected(session, fake_redis):
     original_verifier = account.password_verifier
     await fake_redis.sadd(_whitelist_key(account.id), "jti-keep")
 
-    wrong_old = client_verifier_for("WrongOldPass@0000")
     with pytest.raises(OldPasswordError):
         await change_password(
             session=session,
             user_id=account.id,
-            old_verifier=wrong_old,
-            verifier=client_verifier_for("NewPass@2025"),
-            kdf_params=make_kdf_params("new-salt"),
+            sealed_old_password=seal_password("WrongOldPass@0000"),
+            sealed_new_password=seal_password("NewPass@2025"),
         )
 
     # 旧密码核验失败：账户不变、version 不变、refresh 白名单原封不动
@@ -92,7 +87,7 @@ async def test_change_password_wrong_old_verifier_rejected(session, fake_redis):
 
 async def test_change_password_same_password_rejected(session, fake_redis):
     """新密码与旧密码相同：抛 SamePasswordError，且不改库、不动 version。"""
-    account, old_verifier = await create_account(
+    account, old_password = await create_account(
         session, password="SamePass@2024", token_version=2
     )
 
@@ -100,10 +95,9 @@ async def test_change_password_same_password_rejected(session, fake_redis):
         await change_password(
             session=session,
             user_id=account.id,
-            old_verifier=old_verifier,
-            # 新 verifier 用同一密码派生 → 服务端用当前盐二次哈希后等于库里值 → 判为未改
-            verifier=client_verifier_for("SamePass@2024"),
-            kdf_params=make_kdf_params("new-salt"),
+            sealed_old_password=seal_password(old_password),
+            # 新密码与旧相同 → 服务端用当前盐二次哈希后等于库里值 → 判为未改
+            sealed_new_password=seal_password("SamePass@2024"),
         )
 
     refreshed = await session.get(Account, account.id)
@@ -116,7 +110,6 @@ async def test_change_password_account_not_found(session, fake_redis):
         await change_password(
             session=session,
             user_id=999_999,  # 库里不存在
-            old_verifier=client_verifier_for("AnyPass@2024"),
-            verifier=client_verifier_for("NewPass@2025"),
-            kdf_params=make_kdf_params("new-salt"),
+            sealed_old_password=seal_password("AnyPass@2024"),
+            sealed_new_password=seal_password("NewPass@2025"),
         )

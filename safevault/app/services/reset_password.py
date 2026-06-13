@@ -7,8 +7,8 @@
   1. 限流（IP 维度）——已在路由依赖 rate_limit("reset") 前置拦截，本编排不再处理。
   2. GET code:{email} 校验验证码 → 缺失 / 不符抛 InvalidCodeError(400「验证码错误或已过期」)。
   3. 按 email 查 account 取 user_id；账户不存在 → 同样抛 InvalidCodeError(400)，与验证码失败同一提示。
-  4. 生成**新** server_salt → hash_verifier(新verifier, 新server_salt) → UPDATE password_verifier
-     / server_salt / kdf_params BY email（kdf_params 也更新，因换了新 client salt）。
+  4. 解封新明文密码 → 生成**新** server_salt → hash_password(新明文, 新server_salt) →
+     UPDATE password_verifier / server_salt BY email。
   5. DEL code:{email}（用后即焚，防验证码复用）。
   6. invalidate_all_sessions(account)（方案 B 严格立即失效，与 §5 改密共用同一公共方法）：
      token_version 自增（任何残存的旧 access 因 tv 落后**立即失效**）+ 同步 Redis 缓存 +
@@ -47,29 +47,32 @@ from models.account import Account
 from services.token import invalidate_all_sessions
 # 验证码校验与 key 统一收敛在 services/verify_code.py，注册（§2）与重置（§6）共用同一实现
 from services.verify_code import _code_key, verify_code
-# 与注册 / 登录 / 改密共用同一套 server_salt 生成与 verifier 慢哈希实现，杜绝算法漂移
+# 与注册 / 登录 / 改密共用同一套 server_salt 生成与口令慢哈希实现，杜绝算法漂移
 # （详见 services/verifier.py）。
-from services.verifier import generate_server_salt, hash_verifier
+from services.verifier import generate_server_salt, hash_password
+from services.seal import decrypt_sealed
 
 
 async def reset_account(
     session: AsyncSession,
     email: str,
-    verifier: str,
-    kdf_params: dict[str, Any],
+    sealed_new_password: str,
     code: str,
 ) -> dict[str, Any]:
     """忘记密码重置主流程，返回 { resetOk: True, recoverable: True }（走决策点 C2）。
 
     :param session: 异步数据库会话（由路由依赖注入，事务化，退出自动提交）
     :param email: 已归一化（小写、去空格）邮箱
-    :param verifier: 客户端用新密码本地派生的新密码验证器（base64，非明文）
-    :param kdf_params: 新的本地密钥派生配方（含新 client salt，后端仅透传存储）
+    :param sealed_new_password: 客户端用新密码做的封装（base64），解封后落库
     :param code: 邮箱验证码
     :returns: {"resetOk": True, "recoverable": True}
+    :raises SealDecryptError: 密码封装无效（400）
     :raises InvalidCodeError: 验证码缺失 / 不符，或邮箱未注册（统一 400「验证码错误或已过期」）
     """
     redis = get_redis()
+
+    # 步骤 1：解封得新明文密码（封装非法 → SealDecryptError 400）。明文仅内存内短暂存在、不落盘。
+    new_password = decrypt_sealed(sealed_new_password)
 
     # 步骤 2：校验验证码（共享 services/verify_code.verify_code）
     await verify_code(email, code)
@@ -81,13 +84,11 @@ async def reset_account(
     if account is None:
         raise InvalidCodeError("验证码错误或已过期")
 
-    # 步骤 4：生成新的 server_salt，对新 verifier 二次慢哈希后更新三列（含 kdf_params——换了新
-    # client salt 必须一并更新，否则后续 §3 登录用旧 salt 重算 verifier 会比不中）。
+    # 步骤 4：生成新的 server_salt，对新明文二次慢哈希后更新两列。
     # 直接改已加载 ORM 实体属性 → SQLAlchemy 在 flush 时生成 UPDATE；事务由 get_session 收尾提交。
     server_salt = generate_server_salt()
     account.server_salt = server_salt
-    account.password_verifier = hash_verifier(verifier, server_salt)
-    account.kdf_params = kdf_params
+    account.password_verifier = hash_password(new_password, server_salt)
     await session.flush()
 
     # 步骤 5：DEL code:{email}（用后即焚，防验证码复用）

@@ -28,7 +28,7 @@ import GeneratePasswordField from './components/GeneratePasswordField.vue'
 import CategorySelect from './components/CategorySelect.vue'
 import AppIcon from '@/components/icons/AppIcon.vue'
 
-import { navReplace, decodeParam } from '@/utils/navigation'
+import { navReplace, navBack, decodeParam } from '@/utils/navigation'
 import { useVaultStore } from '@/stores/vault'
 import { useAddPassword } from '@/composables/useAddPassword'
 import { useSheetDismiss } from '@/composables/useSheetDismiss'
@@ -113,8 +113,13 @@ async function handleSubmit() {
   if (isEdit.value) {
     const entry = await updatePassword(editIdRaw.value, payload)
     if (entry) {
-      // 编辑完成回到该条目详情页，立即可见更新结果
-      navReplace('PasswordDetail', { id: editIdRaw.value })
+      // 编辑完成返回上一页（原详情页）。
+      // 详情页 entry 是 computed(() => vaultStore.getEntry(id))，
+      // store 更新后 computed 自动重算，回到前台即展示最新数据。
+      // 旧方案用 navReplace('PasswordDetail') 会走 redirectTo，
+      // 只替换栈顶 edit→new detail，旧 detail 仍在栈中，
+      // 导致左滑回退时又进入一遍重复的详情页。
+      navBack()
     }
   } else {
     const entry = await savePassword(payload)
@@ -151,7 +156,7 @@ onUnmounted(cleanup)
         <FormField
           v-model="form.name"
           label="名称/平台"
-          placeholder="例如：微信、GitHub、Netflix"
+          placeholder="例如：微信、GitHub、QQ"
           required
           :disabled="saving"
           @submit="handleSubmit"

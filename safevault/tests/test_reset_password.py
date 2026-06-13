@@ -17,7 +17,7 @@ from services.reset_password import reset_account
 from services.token import _token_version_key, _whitelist_key
 from services.verify_code import _code_key
 
-from conftest import client_verifier_for, create_account, make_kdf_params
+from conftest import create_account, seal_password
 
 
 async def test_reset_success_invalidates_all_sessions(session, fake_redis):
@@ -35,21 +35,19 @@ async def test_reset_success_invalidates_all_sessions(session, fake_redis):
     result = await reset_account(
         session=session,
         email="reset@example.com",
-        verifier=client_verifier_for("BrandNew@2025"),
-        kdf_params=make_kdf_params("reset-salt"),
+        sealed_new_password=seal_password("BrandNew@2025"),
         code="123456",
     )
 
-    # 1) 响应走决策点 C1：不含 token、不自动登录
-    assert result == {"resetOk": True, "cloudBackupCleared": True}
+    # 1) 响应走决策点 C2：不含 token、不自动登录，告知旧备份可经恢复码恢复
+    assert result == {"resetOk": True, "recoverable": True}
     assert "tokens" not in result
 
     refreshed = await session.get(Account, account.id)
     # 2) token_version 自增（5 → 6）：任何残存旧 access 立即失效
     assert refreshed.token_version == 6
-    # 3) verifier / kdf_params 真实更新
+    # 3) password_verifier 真实更新（换了新盐 + 新口令慢哈希）
     assert refreshed.password_verifier != old_verifier_hash
-    assert refreshed.kdf_params["salt"] == "reset-salt"
     # 4) refresh 白名单清空
     assert await fake_redis.exists(_whitelist_key(account.id)) == 0
     # 5) tokenver 缓存写穿为新值 6
@@ -69,8 +67,7 @@ async def test_reset_wrong_code_rejected(session, fake_redis):
         await reset_account(
             session=session,
             email="reset@example.com",
-            verifier=client_verifier_for("BrandNew@2025"),
-            kdf_params=make_kdf_params("reset-salt"),
+            sealed_new_password=seal_password("BrandNew@2025"),
             code="000000",  # 错误验证码
         )
 
@@ -87,7 +84,6 @@ async def test_reset_unregistered_email_same_error(session, fake_redis):
         await reset_account(
             session=session,
             email="ghost@example.com",
-            verifier=client_verifier_for("BrandNew@2025"),
-            kdf_params=make_kdf_params("reset-salt"),
+            sealed_new_password=seal_password("BrandNew@2025"),
             code="123456",
         )

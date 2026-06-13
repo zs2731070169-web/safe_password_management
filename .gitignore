@@ -20,3 +20,11 @@ venv/
 
 # Claude 本地记忆/配置，不入库
 .claude/
+
+# E2E 测试产物（node_modules / 截图，不入库）
+.e2e-str/
+
+# Python 覆盖率产物
+.coverage
+htmlcov/
+coverage.xml

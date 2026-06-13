@@ -3,6 +3,7 @@ import { storeToRefs } from 'pinia'
 import { toastSuccess, toastError, toastInfo } from '@/utils/feedback'
 import { useVaultStore } from '@/stores/vault'
 import { useCloudAccountStore } from '@/stores/cloudAccount'
+import { useSettingsStore } from '@/stores/settings'
 import { copyText } from '@/services/clipboard'
 import { formatRelativeTime } from '@/utils/formatBackup'
 
@@ -16,20 +17,23 @@ import { formatRelativeTime } from '@/utils/formatBackup'
 export function useVault() {
   const store = useVaultStore()
   const cloudStore = useCloudAccountStore()
+  const settings = useSettingsStore()
   const { filteredEntries, categories, activeCategory, keyword, hydrating } =
     storeToRefs(store)
   // 云端登录态与备份元信息缓存：用于在「最近更新」标题旁展示「上次同步」时间
   const { loggedIn: cloudLoggedIn, backupMeta } = storeToRefs(cloudStore)
+  // 「开启云备份」开关：未开启时不与云端交互（与 useCloudHydrate 的水合门控对称）
+  const { cloudBackup } = storeToRefs(settings)
 
   /**
    * 「上次同步」副信息文案（仅展示相对时间，不含体积 / 版本）。
    * 据 backupMeta 缓存（§3 GET /backup/meta 拉取结果）派生，仅以下情形有值，否则为空串（列表页不展示，保持清爽）：
-   *   - 未登录 / 尚未拉取（backupMeta 为 null）→ ''
+   *   - 未开启云备份 / 未登录 / 尚未拉取（backupMeta 为 null）→ ''
    *   - 云端暂无备份（hasBackup=false）→ ''
    *   - 命中且 updatedAt 可解析 → 「上次同步：<相对时间>」（如「上次同步：刚刚 / 3 分钟前」）
    */
   const lastSyncText = computed(() => {
-    if (!cloudLoggedIn.value) return ''
+    if (!cloudBackup.value || !cloudLoggedIn.value) return ''
     const meta = backupMeta.value
     if (!meta || !meta.hasBackup) return ''
     const rel = formatRelativeTime(meta.updatedAt)
@@ -37,10 +41,11 @@ export function useVault() {
   })
 
   // 进入密码库页时按需拉取一次备份元信息（轻量：只取 updatedAt 等，不拉 blob / 不解密）。
-  // 仅已登录时发起；离开页面取消在途请求。失败由 store.loadBackupMeta 内部静默吞掉（副信息不阻断列表）。
+  // 仅「开启云备份」且已登录时发起（与 useCloudHydrate 门控对称：关闭云备份则不与云端交互）；
+  // 离开页面取消在途请求。失败由 store.loadBackupMeta 内部静默吞掉（副信息不阻断列表）。
   let metaController = null
   onMounted(() => {
-    if (!cloudLoggedIn.value) return
+    if (!cloudBackup.value || !cloudLoggedIn.value) return
     metaController = new AbortController()
     cloudStore.loadBackupMeta({ signal: metaController.signal }).catch(() => {
       // AbortError（离开页面取消）等已在 store 层处理 / 此处兜底吞掉，不打扰用户

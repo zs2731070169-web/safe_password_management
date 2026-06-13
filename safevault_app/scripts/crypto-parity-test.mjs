@@ -10,7 +10,9 @@
 import { webcrypto } from 'node:crypto'
 import { pbkdf2Async } from '@noble/hashes/pbkdf2'
 import { sha256 } from '@noble/hashes/sha2'
+import { hkdf } from '@noble/hashes/hkdf'
 import { gcm } from '@noble/ciphers/aes'
+import { x25519 } from '@noble/curves/ed25519'
 
 const subtle = webcrypto.subtle
 
@@ -95,9 +97,67 @@ async function testSha256() {
   assertEq('SHA-256 hex', webHex, nobleHex)
 }
 
+// ---------------------------------------------------------------- //
+// 4) 认证密码非对称封装（sealed-box）round-trip：客户端封装 → 服务端解封还原同一明文
+//    构造须与 utils/seal.js（客户端）+ services/seal.py（服务端）逐字节一致：
+//    X25519 ECDH → HKDF-SHA256(salt=eph_pub‖server_pub, info) → AES-256-GCM。
+// ---------------------------------------------------------------- //
+const HKDF_INFO = new TextEncoder().encode('safevault/auth-seal/v1')
+
+/** 客户端封装（镜像 utils/seal.js）：返回 eph_pub ‖ iv ‖ ct+tag 字节。 */
+function sealClient(plaintext, serverPub) {
+  const ephPriv = webcrypto.getRandomValues(new Uint8Array(32))
+  const ephPub = x25519.getPublicKey(ephPriv)
+  const shared = x25519.getSharedSecret(ephPriv, serverPub)
+  const salt = new Uint8Array(64)
+  salt.set(ephPub, 0)
+  salt.set(serverPub, 32)
+  const key = hkdf(sha256, shared, salt, HKDF_INFO, 32)
+  const iv = webcrypto.getRandomValues(new Uint8Array(IV_LEN))
+  const ct = gcm(key, iv).encrypt(new TextEncoder().encode(plaintext))
+  const payload = new Uint8Array(32 + IV_LEN + ct.length)
+  payload.set(ephPub, 0)
+  payload.set(iv, 32)
+  payload.set(ct, 32 + IV_LEN)
+  return payload
+}
+
+/** 服务端解封（镜像 services/seal.py）：用服务端私钥 + 临时公钥还原明文。 */
+function unsealServer(payload, serverPriv, serverPub) {
+  const ephPub = payload.slice(0, 32)
+  const iv = payload.slice(32, 32 + IV_LEN)
+  const ct = payload.slice(32 + IV_LEN)
+  const shared = x25519.getSharedSecret(serverPriv, ephPub)
+  const salt = new Uint8Array(64)
+  salt.set(ephPub, 0)
+  salt.set(serverPub, 32)
+  const key = hkdf(sha256, shared, salt, HKDF_INFO, 32)
+  return new TextDecoder().decode(gcm(key, iv).decrypt(ct))
+}
+
+async function testSeal() {
+  console.log('\n[4] 认证密码非对称封装 sealed-box round-trip')
+  const serverPriv = webcrypto.getRandomValues(new Uint8Array(32))
+  const serverPub = x25519.getPublicKey(serverPriv)
+  const password = '我的云账户密码Aa1!@#'
+  const payload = sealClient(password, serverPub)
+  assertEq('sealed-box 解封还原明文', password, unsealServer(payload, serverPriv, serverPub))
+  // 篡改密文末字节（tag）应解密失败
+  const tampered = payload.slice()
+  tampered[tampered.length - 1] ^= 0xff
+  let threw = false
+  try {
+    unsealServer(tampered, serverPriv, serverPub)
+  } catch {
+    threw = true
+  }
+  assertEq('篡改封装应解密失败', true, threw)
+}
+
 const { webBits } = await testPbkdf2()
 await testGcm(new Uint8Array(webBits))
 await testSha256()
+await testSeal()
 
 console.log(`\n${failed === 0 ? '✅ 全部一致：App 纯 JS 实现与 H5 WebCrypto 跨端互通' : `❌ ${failed} 项不一致`}`)
 process.exit(failed === 0 ? 0 : 1)

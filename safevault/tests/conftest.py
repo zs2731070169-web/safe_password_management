@@ -15,18 +15,27 @@ Redis 的读写语义，而是用轻量替身跑真链路：
 from __future__ import annotations
 
 import base64
+import os
 from collections.abc import AsyncGenerator
 from typing import Any
 
 import fakeredis.aioredis
 import pytest_asyncio
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.asymmetric.x25519 import (
+    X25519PrivateKey,
+    X25519PublicKey,
+)
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import client.db_client as db_client
 import client.redis_client as redis_client
 from core.base.base import Base
 from models.account import Account
-from services.verifier import generate_server_salt, hash_verifier
+from services.seal import get_server_public_key_b64
+from services.verifier import generate_server_salt, hash_password
 
 
 @pytest_asyncio.fixture
@@ -77,15 +86,26 @@ async def fake_redis() -> AsyncGenerator[fakeredis.aioredis.FakeRedis, None]:
         await client.aclose()
 
 
-def _verifier_from_password(password: str) -> str:
-    """把测试用「明文密码」确定性映射成一个合法的 client verifier（base64，≥16 字节）。
+def seal_password(plaintext: str) -> str:
+    """模拟前端：用服务端公钥把明文密码非对称封装（ECIES）成 base64，供注册/登录/改密/重置测试上送。
 
-    真实链路里 verifier 由前端 KDF 派生；测试只需一个「同密码恒等、不同密码相异、长度达标」
-    的占位 verifier 即可驱动服务端二次慢哈希。用 password 的字节左填充到 24 字节再 base64。
+    构造与 services/seal.py 逐字节对齐（X25519 ECDH → HKDF-SHA256 → AES-256-GCM）：
+        payload = base64( eph_pub(32) ‖ iv(12) ‖ ct+tag )
+    服务端 decrypt_sealed 用本进程同一私钥即可解封回明文，验证端到端可用。
     """
-    raw = password.encode("utf-8")
-    padded = raw.ljust(24, b"\x00")  # 保证 base64 后长度 ≥16，满足 schema 的 min_length
-    return base64.b64encode(padded).decode("ascii")
+    server_pub_raw = base64.b64decode(get_server_public_key_b64())
+    eph = X25519PrivateKey.generate()
+    eph_pub = eph.public_key().public_bytes_raw()
+    shared = eph.exchange(X25519PublicKey.from_public_bytes(server_pub_raw))
+    key = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=eph_pub + server_pub_raw,
+        info=b"safevault/auth-seal/v1",
+    ).derive(shared)
+    iv = os.urandom(12)
+    ct = AESGCM(key).encrypt(iv, plaintext.encode("utf-8"), None)
+    return base64.b64encode(eph_pub + iv + ct).decode("ascii")
 
 
 # 测试账户 id 自增计数器。SQLite 仅对 INTEGER PRIMARY KEY 自动生成主键，本项目主键映射为
@@ -101,38 +121,32 @@ async def create_account(
     password: str = "OldPass@2024",
     token_version: int = 1,
 ) -> tuple[Account, str]:
-    """在库里建一个账户，返回 (account, 该密码对应的 client verifier)。
+    """在库里建一个账户，返回 (account, 明文密码)。
 
-    模拟注册落库：生成 server_salt → 对 client verifier 二次慢哈希存 password_verifier。
-    返回的 client verifier 即「客户端用该明文密码派生的产物」，测试改密时作为 old_verifier 传入。
+    模拟注册落库（认证已改为非对称封装上送密码）：生成 server_salt → 对**明文密码**服务端慢哈希
+    存 password_verifier。返回的明文密码供测试用 seal_password 封装后作为 sealed_* 上送。
 
-    :returns: (已 flush 的 account 实体, 该密码的 client verifier)
+    :returns: (已 flush 的 account 实体, 明文密码)
     """
     global _next_account_id
     account_id = _next_account_id
     _next_account_id += 1
 
-    client_verifier = _verifier_from_password(password)
     server_salt = generate_server_salt()
     account = Account(
         id=account_id,  # 显式赋 id，绕开 SQLite 对 BIGINT 主键不自增的方言差异
         email=email,
         server_salt=server_salt,
-        password_verifier=hash_verifier(client_verifier, server_salt),
-        kdf_params={"algorithm": "pbkdf2", "salt": "old", "iterations": 200000},
+        password_verifier=hash_password(password, server_salt),
+        kdf_params={"scheme": "sealed-v1"},  # 认证零知识废除后该列仅留标记，不参与计算
         status=1,
         token_version=token_version,
     )
     session.add(account)
     await session.flush()
-    return account, client_verifier
-
-
-def client_verifier_for(password: str) -> str:
-    """对外暴露密码→client verifier 的映射，便于测试构造新密码 / 错误旧密码。"""
-    return _verifier_from_password(password)
+    return account, password
 
 
 def make_kdf_params(salt: str) -> dict[str, Any]:
-    """构造一份新 kdf_params（仅 salt 区分新旧），模拟换新 client salt。"""
+    """构造一份 kdf_params 占位（仅 salt 区分），供**备份 blob** 上传测试使用（与认证无关）。"""
     return {"algorithm": "pbkdf2", "salt": salt, "iterations": 200000}

@@ -1,8 +1,9 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { maskAccountText } from '@/utils/maskAccount'
-import { postJson } from '@/services/http'
-import { deriveVerifier, deriveVerifierWithParams } from '@/utils/kdf'
+import { postJson, getJson } from '@/services/http'
+import { sealPassword } from '@/utils/seal'
+import { getServerSealPubKey } from '@/services/sealKey'
 import {
   generateBackupKdfParams,
   generateDataKeyRaw,
@@ -90,11 +91,6 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
   const pendingRecoveryCode = ref('')
   /** 账户 id（即后端 userId，注册成功后由后端返回；过渡期仅内存留存） */
   const userId = ref(restored.userId)
-  /**
-   * 密钥派生配方（注册时产生：algorithm/salt/iterations/length）。持久化在本端，
-   * 供 §3 登录用同一份配方重算出与注册一致的 verifier（非机密，仅盐 + 参数）。
-   */
-  const kdfParams = ref(restored.kdfParams)
   /** 访问令牌 accessToken（短时效，仅内存留存，不持久化） */
   const accessToken = ref(null)
   /** 刷新令牌 refreshToken（长时效，持久化以便后续续签；真实续签见 §4） */
@@ -161,13 +157,12 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
    */
   async function register({ email: addr, password: pwd, code }, { signal } = {}) {
     return runAuth(async () => {
-      // 【已真实接入】零知识派生 verifier + kdf_params 后调 POST /auth/register，注册即登录。
-      const { tokens, userId: uid, kdfParams: params } = await realRegister(addr, pwd, code, signal)
+      // 【已真实接入】用服务端公钥封装明文密码后调 POST /auth/register，注册即登录。
+      const { tokens, userId: uid } = await realRegister(addr, pwd, code, signal)
       // 保存会话凭据：access 仅内存、refresh 持久化以备续签；userId 记内存。
       accessToken.value = tokens?.accessToken ?? null
       refreshToken.value = tokens?.refreshToken ?? null
       userId.value = uid ?? null
-      kdfParams.value = params
       email.value = addr
       password.value = pwd
 
@@ -186,13 +181,12 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
       )
 
       loggedIn.value = true
-      // 持久化：含 pwWrapped/pwKdf（供下次同机重登离线解包）；kdfParams 供 §3 登录重算 verifier。
+      // 持久化：含 pwWrapped/pwKdf（供下次同机重登离线解包保险库 DataKey）。
       // 明文密码不落盘——仅 password.value 会话内存留存。
       persistCloudAccount({
         email: addr,
         userId: uid,
         refreshToken: refreshToken.value,
-        kdfParams: params,
         pwWrapped: pwWrapped.value,
         pwKdf: pwKdf.value
       })
@@ -213,27 +207,31 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
    */
   async function login({ email: addr, password: pwd }, { signal } = {}) {
     return runAuth(async () => {
-      // 【已真实接入】先拉 kdf_params 再本地重算 verifier，POST /auth/login（§3，详见 realLogin）。
-      const { tokens, userId: uid, kdfParams: params } = await realLogin(addr, pwd, signal)
+      // 【已真实接入】用服务端公钥封装明文密码后 POST /auth/login（认证瞬时，详见 realLogin）。
+      const { tokens, userId: uid } = await realLogin(addr, pwd, signal)
       // 保存会话凭据：access 仅内存、refresh 持久化以备续签；userId 记内存。
       accessToken.value = tokens?.accessToken ?? null
       refreshToken.value = tokens?.refreshToken ?? null
       userId.value = uid ?? null
-      kdfParams.value = params // 回填本地（如老账户此前无本地配方）
       email.value = addr
       password.value = pwd
       // 先尝试用本地 pwWrapped + 该密码解包会话 DataKey（同机重登 / 改密后重登走本地、离线即可），
       // **再**置登录态触发登录后初始化（useCloudHydrate / useLocalPersist），确保它们运行时 DataKey 已就绪、
       // 避免竞态。本地无包裹（换机 / 重置后已清）则解包失败，留待 useCloudHydrate 用云端 wrappedDataKey 解包。
       await unlockDataKeyFromLocal()
+      // 换机首登（本地无包裹）：无条件尝试用云端 wrappedDataKey 建立会话 DataKey，
+      // 与 cloudBackup 开关解耦——确保 verifyPassword 等本地零知识校验路径（删条目 / 改密 / 删云端备份 /
+      // 重新生成恢复码）以及后续整库上云均可用。详见 DEF-VERIFY-NOWRAP 修复说明。
+      if (!hasDataKey()) {
+        await tryInitDataKeyFromCloud(signal)
+      }
       loggedIn.value = true
-      // 续期本地持久化：刷新 refreshToken / userId / kdfParams + 保留 pwWrapped/pwKdf；明文密码不落盘。
+      // 续期本地持久化：刷新 refreshToken / userId + 保留 pwWrapped/pwKdf；明文密码不落盘。
       // 保留待恢复标志：重置后跳过、再重登的场景，登录不应抹掉「数据待恢复」状态。
       persistCloudAccount({
         email: addr,
         userId: uid,
         refreshToken: refreshToken.value,
-        kdfParams: params,
         pwWrapped: pwWrapped.value,
         pwKdf: pwKdf.value,
         pendingRecovery: pendingRecovery.value
@@ -268,9 +266,9 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
   /**
    * 修改账户密码（身份已在进入页时验证）。对应 POST /auth/change-password（§5，方案 B 严格立即失效）。
    *
-   * 零知识两段派生：
-   *   - **旧密码** + 本地持有的旧 kdf_params → old_verifier，供后端二次核验「确实掌握旧密码」；
-   *   - **新密码** → 新的 { verifier, kdfParams }（新 client salt，明文不出端）落库。
+   * 非对称封装上送：
+   *   - **旧密码**封装（sealed_old_password）→ 后端解封后二次核验「确实掌握旧密码」；
+   *   - **新密码**封装（sealed_new_password）→ 后端解封后慢哈希落库。
    * 带 access token 上送（首发 401 则静默续签后重试一次）。方案 B 下后端校验旧密码 → 重算落库 →
    * 自增 token_version + 清全部 refresh（**含当前设备在内的全部会话一并失效**），返回
    * { success, relogin }，**不再下发 token**。
@@ -286,22 +284,20 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
    * @returns {Promise<boolean>} 修改成功返回 true
    */
   async function changePassword(newPassword, { signal } = {}) {
-    // 旧密码核验所需：用**旧明文密码 + 旧 kdf_params** 在本地派生 old_verifier（方案 B 后端二次核验）。
-    // password / kdfParams 为进入本页前已持久化的当前账户凭据；缺任一无法核验，按登录态失效处理。
+    // 旧密码核验所需：用**旧明文密码**封装上送供后端二次核验（方案 B）。
+    // password 为进入本页前会话内存留存的当前明文密码；缺失按登录态失效处理。
     const oldPassword = password.value
-    const oldKdfParams = kdfParams.value
-    if (!oldPassword || !oldKdfParams) {
+    if (!oldPassword) {
       const err = new Error('登录态已失效，请重新登录')
       err.status = 401
       throw err
     }
 
-    // 1) 调后端改密：本地派生 old_verifier + 新 verifier/kdf_params 上送（带 401→续签→重试一次）。
+    // 1) 调后端改密：封装旧 / 新明文密码上送（带 401→续签→重试一次）。
     //    成功即代表后端已校验旧密码并完成落库 + 全量会话失效；方案 B 不返回 token，故此处不读返回。
     await realChangePassword({
       newPassword,
       oldPassword,
-      oldKdfParams,
       accessToken: accessToken.value,
       // 续签回调：复用底层 realRefresh（不走 refresh() action，避免其 lock() 登出副作用），
       // 成功后立刻把新 refresh 落到 store，并返回新 access 供改密重试。
@@ -323,8 +319,6 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
     refreshToken.value = null
     // 会话内存中的明文密码同步为新密码（供本会话 KEK 派生 / 身份二次校验；不落盘）。
     password.value = newPassword
-    // kdfParams 已被后端换为新 salt，本地旧配方作废 → 清空；下次登录由 realLogin 重新向后端拉取最新配方。
-    kdfParams.value = null
     // 包裹式：DataKey 不变，仅用新密码重新包裹一份 pwWrapped 持久化（重登时本地即可解包）。
     // 整库密文无需重新加密、云端整库不必重传——改密因此瞬时完成；下次库变更自动把云端 wrappedDataKey 收敛为新的。
     if (_dataKeyRaw) {
@@ -336,7 +330,6 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
       email: email.value,
       userId: userId.value,
       refreshToken: null,
-      kdfParams: null,
       pwWrapped: pwWrapped.value,
       pwKdf: pwKdf.value
     })
@@ -370,19 +363,17 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
   async function resetPassword({ code, newPassword }, { signal } = {}) {
     return runAuth(async () => {
       const addr = email.value
-      // §6：本地零知识派生新 verifier + 新 kdf_params 后 POST /auth/reset-password。后端更新
-      // verifier/server_salt/kdf_params、DEL code、吊销全部 refresh，返回 { resetOk,
-      // cloudBackupCleared }（C1：旧云备份失效，不发 token、不自动登录）。
+      // §6：封装新明文密码后 POST /auth/reset-password。后端解封 → 更新 password_verifier/server_salt、
+      // DEL code、吊销全部 refresh，返回 { resetOk, recoverable }（C2：旧云备份可经恢复码恢复，
+      // 不发 token、不自动登录）。
       await realReset(addr, newPassword, code, signal)
-      // §3：随即用新密码走一次真实登录拿合法会话——realLogin 会重新拉后端 kdf_params（此刻已是
-      // 重置后的新 salt）、本地重算 verifier、比中后签发新 token。这是重置后拿会话的正当途径。
-      const { tokens, userId: uid, kdfParams: params } = await realLogin(addr, newPassword, signal)
-      // 回写会话凭据与账户绑定：access 仅内存、refresh 持久化；kdfParams 换了新 salt，**必须**更新
-      // 并持久化新的（否则后续登录用旧 salt 重算 verifier 会比不中）。
+      // §3：随即用新密码走一次真实登录拿合法会话——封装新密码上送、后端解封比中后签发新 token。
+      // 这是重置后拿会话的正当途径。
+      const { tokens, userId: uid } = await realLogin(addr, newPassword, signal)
+      // 回写会话凭据与账户绑定：access 仅内存、refresh 持久化。
       accessToken.value = tokens?.accessToken ?? null
       refreshToken.value = tokens?.refreshToken ?? null
       userId.value = uid ?? null
-      kdfParams.value = params
       password.value = newPassword
       loggedIn.value = true
       // 重置（忘密码，决策点 C2）：旧密码包裹的 pwWrapped 无法用新密码解开 → 清空本地包裹、清会话密钥，
@@ -395,7 +386,6 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
         email: addr,
         userId: uid,
         refreshToken: refreshToken.value,
-        kdfParams: params,
         pwWrapped: null,
         pwKdf: null,
         // 持久化待恢复标志：跳过恢复后刷新/重登仍能在设置页看到「数据待恢复」入口
@@ -430,13 +420,12 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
       // 轮转回写：新 access（仅内存）+ 新 refresh（旧的已被后端 SREM 作废）
       accessToken.value = tokens?.accessToken ?? null
       refreshToken.value = tokens?.refreshToken ?? null
-      // 持久化新的 refreshToken；email/userId/kdfParams 维持原值（从当前 ref 读）；明文密码不落盘
+      // 持久化新的 refreshToken；email/userId 维持原值（从当前 ref 读）；明文密码不落盘
       // 保留待恢复标志：续签发生在待恢复窗口内时不应抹掉该状态
       persistCloudAccount({
         email: email.value,
         userId: userId.value,
         refreshToken: refreshToken.value,
-        kdfParams: kdfParams.value,
         pendingRecovery: pendingRecovery.value
       })
       return true
@@ -558,7 +547,6 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
         email: email.value,
         userId: userId.value,
         refreshToken: refreshToken.value,
-        kdfParams: kdfParams.value,
         pwWrapped: wrapped,
         pwKdf: kdf,
         pendingRecovery: pendingRecovery.value
@@ -578,6 +566,30 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
   async function unlockDataKeyFromLocal() {
     if (!pwWrapped.value || !pwKdf.value) return false
     return unlockDataKeyFromWrapped(pwWrapped.value, pwKdf.value)
+  }
+
+  /**
+   * 换机首登：从云端取 wrappedDataKey 建立会话 DataKey，与 cloudBackup 开关无关。
+   * 仅当本地无 pwWrapped（unlockDataKeyFromLocal 失败、会话尚无 DataKey）且 accessToken 存在时调用。
+   * 成功则 pwWrapped/pwKdf 通过 unlockDataKeyFromWrapped 写入 store 并持久化，
+   * 使 verifyPassword 等本地零知识校验路径可用，也让本地新增数据可正常上云（避免 pwWrapped 为 null）。
+   * 静默：404（无备份 / 账户刚注册）或网络错误 / AbortError 均不影响登录成功。
+   * @param {AbortSignal} [signal]
+   * @returns {Promise<void>}
+   */
+  async function tryInitDataKeyFromCloud(signal) {
+    if (!accessToken.value || hasDataKey()) return
+    try {
+      const res = await getJson('/backup', {
+        signal,
+        headers: { Authorization: `Bearer ${accessToken.value}` }
+      })
+      if (res?.wrappedDataKey && res?.kdfParams) {
+        await unlockDataKeyFromWrapped(res.wrappedDataKey, res.kdfParams)
+      }
+    } catch {
+      // 静默：404（无备份）/ 网络错误 / AbortError 均不影响登录成功
+    }
   }
 
   /**
@@ -613,7 +625,6 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
       email: email.value,
       userId: userId.value,
       refreshToken: refreshToken.value,
-      kdfParams: kdfParams.value,
       pwWrapped: newPwWrapped,
       pwKdf: newPwKdf,
       pendingRecovery: false
@@ -666,7 +677,6 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
       email: email.value,
       userId: userId.value,
       refreshToken: refreshToken.value,
-      kdfParams: kdfParams.value,
       pwWrapped: newPwWrapped,
       pwKdf: newPwKdf,
       pendingRecovery: false
@@ -778,7 +788,7 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
    *
    * 本地优先兜底：无论后端成功 / 失败（网络错、access 过期 401 等）都**始终本地完成登出**——
    * 清 loggedIn / accessToken / refreshToken / 会话内存明文密码，并把持久化的 refreshToken 清空
-   * （**保留** email/userId/kdfParams 账户绑定，使 hasAccount 仍为真，用户回 /unlock 可重新登录）。
+   * （**保留** email/userId 账户绑定，使 hasAccount 仍为真，用户回 /unlock 可重新登录）。
    * 后端未及移除的白名单项由 refresh 的 TTL 自然过期兜底。
    *
    * @param {object} [options]
@@ -817,7 +827,6 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
         email: email.value,
         userId: userId.value,
         refreshToken: null,
-        kdfParams: kdfParams.value,
         // 登出保留账户绑定，待恢复标志亦保留：重登后仍引导恢复 / 重建
         pendingRecovery: pendingRecovery.value
       })
@@ -885,19 +894,22 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
 })
 
 // ===============================================================
-// 后端对接区（/auth/* 真实接入 + 本地零知识密钥派生）
+// 后端对接区（/auth/* 真实接入 —— 认证用非对称封装上送密码）
 // ===============================================================
+//
+// 登录提速方案：认证不再在本地跑 PBKDF2 派生 verifier（App JSCore + noble 纯 JS 上是瓶颈），改为
+// 用服务端 X25519 公钥把明文密码做一次性 ECIES 封装（见 utils/seal.js + services/sealKey.js）上送，
+// 后端解封得明文后慢哈希比对 / 落库。**保险库仍零知识**：DataKey 的随机生成 / 密码包裹（pwWrapped）/
+// 解包（unlockDataKeyFromLocal → deriveKek）/ 恢复码链路全在本地用明文密码完成，与本认证链路解耦、
+// 不受影响（登录仍保留这一次解包 KDF，可由原生插件加速）。
 //
 // 说明：
 //   - 【已真实接入】sendVerifyCode → POST /auth/verify-code（下发邮箱验证码，见 requestVerifyCode）。
-//   - 【已真实接入】register → POST /auth/register（§2 注册开户）：先在本地零知识派生
-//     verifier + kdf_params（见 utils/kdf.js，明文密码不出端），再上送后端；后端校验真验证码、
-//     落库、签发 token，注册即登录。**不再校验固定 123456**，请输入邮箱实收的真验证码。
-//     注册成功后把 kdf_params 持久化到本地（供 §3 登录重算 verifier，非机密）。
-//   - 【已真实接入】login → POST /auth/kdf-params + POST /auth/login（§3 登录解锁）：先按邮箱
-//     向后端拉取 kdf_params（salt 非机密，公开返回；不依赖本地持久化，故清缓存 / 换设备都能登录），
-//     再用该配方在本地重算出同一 verifier（见 realLogin），后端用账户 server_salt 再哈希后恒定
-//     时间比对，通过即签发 token。失败计数锁定 → 423、邮箱或密码不正确 → 401。**明文密码不出端**。
+//   - 【已真实接入】register → POST /auth/register（§2 注册开户）：封装明文密码（sealed_password）+
+//     验证码上送；后端解封 → 校验真验证码 → 慢哈希落库 → 签发 token，注册即登录。请输入邮箱实收的真验证码。
+//   - 【已真实接入】login → POST /auth/login（§3 登录解锁）：仅一次 ECIES 封装即上送（无 kdf-params
+//     往返、无本地 PBKDF2，认证瞬时，见 realLogin）；后端解封 → 叠加账户 server_salt 慢哈希后恒定时间
+//     比对，通过即签发 token。失败计数锁定 → 423、邮箱或密码不正确 → 401、封装无效 → 400。
 //   - 【已真实接入】refresh → POST /auth/refresh（§4 token 静默续签，见 realRefresh）：只上送
 //     refreshToken，后端验签 + 白名单（SISMEMBER）通过则**轮转**——SREM 旧 jti 作废、签发新对、
 //     SADD 新 jti，返回 { tokens }。客户端回写新 access（内存）+ 新 refresh 并重新持久化新的
@@ -905,33 +917,27 @@ export const useCloudAccountStore = defineStore('cloudAccount', () => {
 //     已轮转）→ refresh() 触发 lock() 清登录态、清 accessToken，让路由守卫导回登录页（§3）。
 //     全程静默、用户无感。
 //   - 【已真实接入】changePassword → POST /auth/change-password（§5 修改账户密码，见 realChangePassword）：
-//     用**新密码**在本地零知识派生新 { verifier, kdf_params }（新 client salt，明文不出端），带
-//     Authorization: Bearer <access> 上送。后端校验 access → 重算落库（新 server_salt 二次慢哈希）→
-//     自增 token_version + 清全部 refresh（**含当前设备在内的全部会话一并立即失效**）→ 返回
-//     { success, relogin }，**不再下发 token**（方案 B 严格立即失效）。客户端据此**清空本次会话凭据**
-//     （loggedIn / access / refresh，含持久化清空 refreshToken），保留 email/userId 账户绑定，由视图层
-//     导回登录页（/unlock），用户须用**新密码**重新登录。若首发 401（access 过期）且有 refresh，则先
-//     复用底层 realRefresh 续签拿新 access 再重试一次（不走 refresh() action，避免其 lock() 登出副作用）；
-//     仍失败把错误上抛。
+//     封装**旧 / 新**明文密码（sealed_old_password / sealed_new_password）带 Authorization: Bearer <access>
+//     上送。后端校验 access → 解封核验旧密码 → 新 server_salt 慢哈希落库 → 自增 token_version + 清全部
+//     refresh（**含当前设备在内的全部会话一并立即失效**）→ 返回 { success, relogin }，**不再下发 token**
+//     （方案 B 严格立即失效）。客户端据此**清空本次会话凭据**，保留 email/userId 账户绑定，由视图层导回
+//     登录页（/unlock），用户须用**新密码**重新登录。若首发 401（access 过期）且有 refresh，则先复用底层
+//     realRefresh 续签拿新 access 再重试一次（不走 refresh() action，避免其 lock() 登出副作用）；仍失败把错误上抛。
 //   - 【已真实接入】resetPassword → POST /auth/reset-password（§6 忘记密码重置，见 realReset）+
-//     随即 POST /auth/login（§3）。用**新密码**在本地零知识派生新 { verifier, kdf_params }（新
-//     client salt，明文不出端），仅凭邮箱验证码授权上送（无 access token）。后端校验验证码 →
-//     重算落库（新 server_salt 二次慢哈希）→ DEL code → 吊销该用户全部 refresh，返回
-//     { resetOk, cloudBackupCleared }（C1：旧云备份失效、需重新上传），**不发 token、不自动登录**。
-//     故 store.resetPassword 在 reset 成功后**紧接着用新密码走一次真实 §3 登录**拿合法会话（这是
-//     重置后获取会话的正当方式，而非伪造登录态）；二者均调底层裸函数（realReset + realLogin）、
-//     由一次 runAuth 包裹，避免嵌套外层 login 触发 runAuth 守卫自锁。**不再校验固定 123456**，
-//     请输入邮箱实收的真验证码。
+//     随即 POST /auth/login（§3）。封装**新**明文密码（sealed_new_password），仅凭邮箱验证码授权上送
+//     （无 access token）。后端解封 → 校验验证码 → 新 server_salt 慢哈希落库 → DEL code → 吊销该用户全部
+//     refresh，返回 { resetOk, recoverable }（C2：旧云备份可经恢复码恢复），**不发 token、不自动登录**。
+//     故 store.resetPassword 在 reset 成功后**紧接着用新密码走一次真实 §3 登录**拿合法会话；二者均调底层
+//     裸函数（realReset + realLogin）、由一次 runAuth 包裹，避免嵌套外层 login 触发 runAuth 守卫自锁。
 //   - 【已真实接入】logout → POST /auth/logout（§7 退出登录，见 realLogout）：带 access 鉴权 +
 //     { refreshToken } 上送，后端 SREM 该单个 refresh 的 jti 吊销当前会话（**不动 token_version、
 //     不波及其它设备**，区别于 §5 改密的全量失效），返回 { success }。幂等：refresh 已失效也返回成功。
 //     store.logout 做**本地优先兜底**——无论后端成功 / 失败（网络、401 等）都清 loggedIn / access /
-//     refresh 并清持久化 refreshToken（保留 email/userId/kdfParams 账户绑定），回 /unlock 重登。
+//     refresh 并清持久化 refreshToken（保留 email/userId 账户绑定），回 /unlock 重登。
 //     与 lock()（自动锁定，仅清会话态、保留 refresh 可快速重登）语义不同，不再互为别名。
 //   - 【零知识本地校验，不依赖后端】verifyPassword 用待验密码 + 本地 pwKdf 派生 KEK 试解 pwWrapped 包裹的
-//     DataKey，解包成功即密码正确——**不在本地留存任何明文密码**。故 register / login / changePassword /
-//     resetPassword 均不再把明文密码写本地，明文密码只在会话内存留存。
-//   - 会话态 loggedIn 不持久化；accessToken 仅内存；refreshToken / kdfParams 持久化（续签 / 登录用）。
+//     DataKey，解包成功即密码正确——**不在本地留存任何明文密码**。明文密码只在会话内存留存。
+//   - 会话态 loggedIn 不持久化；accessToken 仅内存；refreshToken / pwWrapped / pwKdf 持久化。
 
 /** localStorage 持久化 key */
 const CLOUD_KEY = 'safevault.cloud'
@@ -960,33 +966,31 @@ function loadCloudAccount() {
   try {
     const raw = localStorage.getItem(CLOUD_KEY)
     if (!raw) {
-      return { email: null, userId: null, refreshToken: null, kdfParams: null, pwWrapped: null, pwKdf: null, pendingRecovery: false }
+      return { email: null, userId: null, refreshToken: null, pwWrapped: null, pwKdf: null, pendingRecovery: false }
     }
     const parsed = JSON.parse(raw)
     return {
       email: parsed.email ?? null,
       userId: parsed.userId ?? null,
       refreshToken: parsed.refreshToken ?? null,
-      kdfParams: parsed.kdfParams ?? null,
       pwWrapped: parsed.pwWrapped ?? null,
       pwKdf: parsed.pwKdf ?? null,
       // 待恢复标志持久化：重置后跳过恢复的死状态须跨刷新/重登稳定可见（不再仅靠水合推断）
       pendingRecovery: parsed.pendingRecovery ?? false
     }
   } catch {
-    return { email: null, userId: null, refreshToken: null, kdfParams: null, pwWrapped: null, pwKdf: null, pendingRecovery: false }
+    return { email: null, userId: null, refreshToken: null, pwWrapped: null, pwKdf: null, pendingRecovery: false }
   }
 }
 
 /**
  * 写回云账户绑定（隐私模式 / 配额异常时静默降级，不阻断交互）。
- * **绝不写入明文密码**——只持久化非机密的账户绑定与密文包裹。
+ * **绝不写入明文密码**——只持久化非机密的账户绑定与密文包裹（pwWrapped 为保险库 DataKey 的密码包裹）。
  */
 function persistCloudAccount({
   email,
   userId = null,
   refreshToken = null,
-  kdfParams = null,
   pwWrapped = null,
   pwKdf = null,
   pendingRecovery = false
@@ -994,7 +998,7 @@ function persistCloudAccount({
   try {
     localStorage.setItem(
       CLOUD_KEY,
-      JSON.stringify({ email, userId, refreshToken, kdfParams, pwWrapped, pwKdf, pendingRecovery })
+      JSON.stringify({ email, userId, refreshToken, pwWrapped, pwKdf, pendingRecovery })
     )
   } catch {
     // 不可用时静默
@@ -1002,62 +1006,57 @@ function persistCloudAccount({
 }
 
 /**
- * 真实注册：零知识派生 verifier + kdf_params 后 POST /auth/register（对齐时序图 §2）。
+ * 真实注册：用服务端公钥封装明文密码后 POST /auth/register（认证非对称封装方案）。
  *
- * 明文密码绝不出端：deriveVerifier 在本地把密码派生成不可逆 verifier，后端只拿 verifier 与配方。
- * 后端校验真验证码 → 落库 → 签发 token，返回 { tokens, userId }。
- * 验证码错误/过期 → 后端 400、邮箱已注册 → 409，均由 http 层抽取 detail 抛出中文 Error。
+ * 明文密码不出端明文：sealPassword 用服务端公钥（GET /auth/seal-pubkey）把密码 ECIES 封装，
+ * 后端解封得明文后慢哈希落库。后端校验真验证码 → 落库 → 签发 token，返回 { tokens, userId }。
+ * 验证码错误/过期 → 后端 400、邮箱已注册 → 409、封装无效 → 400，均由 http 层抽取 detail 抛出中文 Error。
  *
  * @param {string} addr 已输入的邮箱
- * @param {string} pwd 云账户明文密码（仅本地派生用）
+ * @param {string} pwd 云账户明文密码（仅用于封装上送，不留存）
  * @param {string} code 邮箱验证码（真验证码）
  * @param {AbortSignal} [signal]
  * @returns {Promise<{ tokens: { accessToken: string, refreshToken: string }, userId: number }>}
  */
 async function realRegister(addr, pwd, code, signal) {
-  // 1) 本地零知识派生：明文密码 → verifier(base64) + kdf_params（派生配方）
-  const { verifier, kdfParams } = await deriveVerifier(pwd)
-  // 2) 上送后端：注意字段名对齐后端 RegisterRequest（snake_case kdf_params）
-  const res = await postJson(
+  // 1) 取服务端公钥并封装明文密码（亚毫秒级，无重计算）
+  const pub = await getServerSealPubKey({ signal })
+  const sealed = sealPassword(pwd, pub)
+  // 2) 上送后端：字段名对齐后端 RegisterRequest（sealed_password）
+  return postJson(
     '/auth/register',
-    { email: addr, verifier, kdf_params: kdfParams, code },
+    { email: addr, sealed_password: sealed, code },
     { signal }
   )
-  // 把 kdfParams 透出供 store 持久化：§3 登录需用同一配方重算 verifier
-  return { ...res, kdfParams }
 }
 
 /**
- * 真实登录：先向后端拉取该邮箱的 kdf_params，本地重算 verifier 后 POST /auth/login（§3）。
+ * 真实登录：用服务端公钥封装明文密码后 POST /auth/login（认证非对称封装方案）。
  *
- * 不再依赖本地持久化的派生配方——登录前先 POST /auth/kdf-params 取回注册时的同一份配方
- * （salt 非机密，零知识 / SRP 惯例公开返回；邮箱未注册则返回伪配方，登录自然 401）。
- * 这样清缓存 / 换设备都能正常登录。明文密码绝不出端：deriveVerifierWithParams 用该配方
- * 派生出与注册一致的 verifier，后端用账户已存 server_salt 再哈希后恒定时间比对。
- * 失败计数锁定 → 423、邮箱或密码不正确 → 401，均由 http 层抽取 detail 抛出中文 Error。
+ * 相比旧零知识方案，登录不再先拉 kdf-params、也不再本地跑 PBKDF2 派生 verifier——只做一次
+ * 亚毫秒级 ECIES 封装即上送，认证段瞬时。后端解封得明文，叠加账户 server_salt 慢哈希后恒定时间
+ * 比对。失败计数锁定 → 423、邮箱或密码不正确 → 401、封装无效 → 400，均由 http 层抽取 detail 抛中文 Error。
+ *
+ * （保险库的 DataKey 解包仍在 store.login 内用本地 pwWrapped 完成，与本认证链路解耦、不受影响。）
  *
  * @param {string} addr 邮箱
- * @param {string} pwd 云账户明文密码（仅本地派生用）
+ * @param {string} pwd 云账户明文密码（仅用于封装上送，不留存）
  * @param {AbortSignal} [signal]
- * @returns {Promise<{ tokens: { accessToken: string, refreshToken: string }, userId: number, kdfParams: object }>}
+ * @returns {Promise<{ tokens: { accessToken: string, refreshToken: string }, userId: number }>}
  */
 async function realLogin(addr, pwd, signal) {
-  // 1) 拉取派生配方（含 client salt）
-  const { kdf_params: params } = await postJson('/auth/kdf-params', { email: addr }, { signal })
-  // 2) 用该配方在本地重算 verifier（与注册一致）
-  const verifier = await deriveVerifierWithParams(pwd, params)
-  // 3) 上送后端比对；把 params 一并透出供 store 回填本地（便于离线展示等）
-  const res = await postJson('/auth/login', { email: addr, verifier }, { signal })
-  return { ...res, kdfParams: params }
+  const pub = await getServerSealPubKey({ signal })
+  const sealed = sealPassword(pwd, pub)
+  return postJson('/auth/login', { email: addr, sealed_password: sealed }, { signal })
 }
 
 /**
- * 真实改密：本地两段派生（旧密码核验 + 新密码落库）后 POST /auth/change-password（§5，方案 B）。
+ * 真实改密：封装旧 / 新明文密码后 POST /auth/change-password（§5，方案 B）。
  *
- * 明文密码绝不出端：
- *   - old_verifier：用**旧密码 + 旧 kdf_params**（deriveVerifierWithParams）重算出与库里一致的旧
- *     verifier，供后端叠加账户当前 server_salt 慢哈希后恒定时间比对，核验「确实掌握旧密码」；
- *   - verifier / kdf_params：用**新密码**（deriveVerifier）派生新的 verifier + 新 client salt 落库。
+ * 明文密码不出端明文：
+ *   - sealed_old_password：用服务端公钥封装**旧密码**，后端解封后叠加账户当前 server_salt 慢哈希、
+ *     与库里恒定时间比对，核验「确实掌握旧密码」；
+ *   - sealed_new_password：封装**新密码**，后端解封后用新 server_salt 慢哈希落库。
  * 请求带 Authorization: Bearer <access> 鉴权。方案 B 下后端校验旧密码 → 重算落库 → 自增
  * token_version + 清全部 refresh（含当前设备会话一并失效），返回 { success, relogin }，**不下发 token**。
  *
@@ -1069,20 +1068,21 @@ async function realLogin(addr, pwd, signal) {
  * 续签重试对它无效（换 access 不改变旧密码校验结果），最终把该 401 原样上抛由上层提示。
  *
  * @param {object} params
- * @param {string} params.newPassword 新明文密码（仅本地派生用，不留存、不上送）
- * @param {string} params.oldPassword 旧明文密码（仅本地派生 old_verifier 用，不上送）
- * @param {object} params.oldKdfParams 旧 kdf_params（含旧 client salt），用于重算 old_verifier
+ * @param {string} params.newPassword 新明文密码（仅用于封装上送，不留存）
+ * @param {string} params.oldPassword 旧明文密码（仅用于封装上送，不留存）
  * @param {string|null} params.accessToken 当前 access token（鉴权头）
  * @param {() => Promise<string|null>} params.renewAccess 续签回调，返回新 access（无则 null）
  * @param {AbortSignal} [params.signal]
  * @returns {Promise<{ success: boolean, relogin: boolean }>} 后端响应（方案 B 不含 token）
  */
-async function realChangePassword({ newPassword, oldPassword, oldKdfParams, accessToken, renewAccess, signal }) {
-  // 1) 本地零知识派生：旧密码（用旧配方重算）→ old_verifier；新密码 → 新 verifier + 新 kdf_params。
-  const oldVerifier = await deriveVerifierWithParams(oldPassword, oldKdfParams)
-  const { verifier, kdfParams } = await deriveVerifier(newPassword)
-  // 请求体字段名对齐后端 ChangePasswordRequest（old_verifier / verifier / snake_case kdf_params）
-  const reqBody = { old_verifier: oldVerifier, verifier, kdf_params: kdfParams }
+async function realChangePassword({ newPassword, oldPassword, accessToken, renewAccess, signal }) {
+  // 1) 取服务端公钥并封装旧 / 新明文密码（亚毫秒级，无重计算）
+  const pub = await getServerSealPubKey({ signal })
+  // 请求体字段名对齐后端 ChangePasswordRequest（sealed_old_password / sealed_new_password）
+  const reqBody = {
+    sealed_old_password: sealPassword(oldPassword, pub),
+    sealed_new_password: sealPassword(newPassword, pub)
+  }
 
   // 内部小工具：带指定 access token 发一次改密请求
   const send = (token) =>
@@ -1108,28 +1108,26 @@ async function realChangePassword({ newPassword, oldPassword, oldKdfParams, acce
 }
 
 /**
- * 真实重置：本地用新密码派生新 verifier + kdf_params 后 POST /auth/reset-password（对齐时序图 §6）。
+ * 真实重置：封装新明文密码后 POST /auth/reset-password（对齐时序图 §6）。
  *
- * 忘记密码场景（无 access token），仅凭邮箱验证码授权。明文密码绝不出端：deriveVerifier 在本地把
- * 新密码派生成新的 { verifier, kdfParams }（含新 client salt），后端只拿 verifier 与配方。后端校验
- * 验证码 → 生成新 server_salt 二次慢哈希后更新 verifier/server_salt/kdf_params → DEL code → 吊销
- * 该用户全部 refresh，返回 { resetOk, cloudBackupCleared }（C1：旧云备份失效，提示重新上传）。
- * 重置**不签发 token**——拿合法会话由调用方随即走一次真实 §3 登录（见 store.resetPassword）。
- * 验证码错误/过期 → 后端 400，由 http 层抽取 detail 抛出中文 Error。
+ * 忘记密码场景（无 access token），仅凭邮箱验证码授权。明文密码不出端明文：sealPassword 用服务端公钥
+ * 把新密码封装上送，后端解封后生成新 server_salt 慢哈希落库 → DEL code → 吊销该用户全部 refresh，
+ * 返回 { resetOk, recoverable }（C2：旧云备份可经恢复码恢复）。重置**不签发 token**——拿合法会话由调用方
+ * 随即走一次真实 §3 登录（见 store.resetPassword）。验证码错误/过期 → 后端 400，由 http 层抽取 detail 抛中文 Error。
  *
  * @param {string} addr 已绑定的邮箱
- * @param {string} pwd 新明文密码（仅本地派生用，不留存、不上送）
+ * @param {string} pwd 新明文密码（仅用于封装上送，不留存）
  * @param {string} code 邮箱验证码（真验证码）
  * @param {AbortSignal} [signal]
- * @returns {Promise<{ resetOk: boolean, cloudBackupCleared: boolean }>}
+ * @returns {Promise<{ resetOk: boolean, recoverable: boolean }>}
  */
 async function realReset(addr, pwd, code, signal) {
-  // 1) 本地零知识派生：新明文密码 → 新 verifier(base64) + 新 kdf_params（含新 client salt）
-  const { verifier, kdfParams } = await deriveVerifier(pwd)
-  // 2) 上送后端：字段名对齐后端 ResetPasswordRequest（snake_case kdf_params）
+  const pub = await getServerSealPubKey({ signal })
+  const sealed = sealPassword(pwd, pub)
+  // 字段名对齐后端 ResetPasswordRequest（sealed_new_password）
   return postJson(
     '/auth/reset-password',
-    { email: addr, verifier, kdf_params: kdfParams, code },
+    { email: addr, sealed_new_password: sealed, code },
     { signal }
   )
 }

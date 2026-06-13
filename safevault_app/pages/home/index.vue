@@ -35,6 +35,7 @@ import { TABS, tabIndexOf } from '@/constants/tabs'
 import { useVaultStore } from '@/stores/vault'
 import { useHealthStore } from '@/stores/health'
 import { navTo } from '@/utils/navigation'
+import { notifyActivity } from '@/utils/autoLock'
 
 // —— 当前激活 Tab：用 swiper 索引作单一真值，key 由索引派生 ——
 const activeIndex = ref(0)
@@ -92,7 +93,14 @@ function handleAdd() {
 </script>
 
 <template>
-  <view class="home">
+  <!-- @touchstartcapture/@touchmovecapture：捕获阶段监听四个主 Tab 的所有触摸（点击/滑动），
+       作为自动锁定的「用户操作」信号——用户操作期间持续重置空闲计时，停手闲置才锁。
+       用 touch 而非 click（app-vue 的 @click 在 view 上可能不触发），且 capture 确保子元素触摸亦被根捕获。 -->
+  <view
+    class="home"
+    @touchstartcapture="notifyActivity"
+    @touchmovecapture="notifyActivity"
+  >
     <!-- 固定顶栏（跨 Tab 常驻，配置随当前 Tab 切换） -->
     <AppHeader
       v-model="keyword"

@@ -64,11 +64,22 @@ class Settings(BaseSettings):
     # 取较长 TTL（默认 7 天）即可，因改密 / 重置自增时会主动刷新缓存，不依赖 TTL 失效保证一致性。
     token_version_cache_ttl: int = 604_800
 
-    # ---------- 服务端密码验证器二次哈希（零知识落库）----------
-    # 客户端传来的 verifier 已是「明文密码本地派生」的产物（后端拿不到明文）；
-    # 落库前再叠加 server_salt 用 PBKDF2-HMAC-SHA256 慢哈希一次，
-    # 即便库泄露也无法离线爆破出 verifier 本身。迭代次数兼顾安全与登录校验耗时。
+    # ---------- 服务端口令二次哈希（落库）----------
+    # 认证已改为「客户端用服务端公钥非对称封装明文密码上送 → 后端解封得明文 → 叠加 server_salt
+    # 用 PBKDF2-HMAC-SHA256 慢哈希一次后落库」（见 services/seal.py、services/password_hash.py）。
+    # 慢哈希使得即便库泄露也无法离线爆破出明文口令。迭代次数兼顾安全与登录校验耗时。
+    # 字段名沿用 verifier_hash_iterations 仅为兼容既有 .env / 引用，语义即「口令落库慢哈希迭代数」。
     verifier_hash_iterations: int = 200_000
+
+    # ---------- 认证非对称封装（sealed-box：X25519 + HKDF-SHA256 + AES-256-GCM）----------
+    # 登录提速方案：替换「客户端本地 PBKDF2 派生 verifier」的零知识认证，改为客户端用服务端 X25519
+    # 公钥把明文密码封装（ECIES）后上送，后端用本私钥解封得明文再慢哈希比对/落库。保险库的零知识
+    # 加密与 DataKey 派生不受影响（仍在客户端本地完成）。
+    #
+    # seal_private_key：服务端 X25519 私钥（32 字节原始私钥的 base64）。**开发用默认值，生产必须经
+    # 环境变量 SEAL_PRIVATE_KEY 覆盖**（切勿沿用此默认；泄露即可解开所有上送的密码封装）。
+    # 对应公钥由私钥推导，经 GET /auth/seal-pubkey 公开下发给客户端（公钥公开不损安全）。
+    seal_private_key: str = "EgdiQg6O6rfmItSGym7+2FhkUgCPdnGu4hPIlfp15jk="
 
     # ---------- 注册接口限流（替代网关，按 IP 维度）----------
     register_rate_limit_ip_per_window: int = 10  # 单 IP 每窗口最大注册尝试次数

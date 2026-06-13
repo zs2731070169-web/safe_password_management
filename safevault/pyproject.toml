@@ -28,6 +28,8 @@ dependencies = [
     "httpx>=0.28.1",
     "pyjwt>=2.13.0",
     "pyngrok>=8.1.2",
+    # 认证非对称封装（sealed-box）：X25519 ECDH + HKDF-SHA256 + AES-256-GCM 解封客户端上送的密码封装
+    "cryptography>=44.0.0",
 ]
 
 [dependency-groups]
@@ -38,6 +40,7 @@ dev = [
     "pytest-asyncio>=0.25.2",   # async 测试用例支持（asyncio_mode=auto）
     "aiosqlite>=0.20.0",        # 测试用内存 SQLite 异步驱动，替代 MySQL 验证真实落库
     "fakeredis>=2.26.2",        # 内存 Redis 替身，验证 refresh 白名单 / tokenver 缓存的真实读写
+    "pytest-cov>=7.1.0",
 ]
 
 [tool.uv]

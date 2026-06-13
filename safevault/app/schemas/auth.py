@@ -1,6 +1,4 @@
 """认证模块的请求 / 响应模型。"""
-from typing import Any
-
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
@@ -26,18 +24,22 @@ class VerifyCodeResponse(BaseModel):
     sent: bool = True
 
 
-class RegisterRequest(BaseModel):
-    """注册开户请求体，对齐时序图 §2 `{ email, verifier, kdf_params, code }`。
+# 密码封装（sealed-box）字段的公共长度约束：base64(eph_pub32 ‖ iv12 ‖ ct+tag≥16)，
+# 最小 60 字节 → base64 约 80 字符；上限放宽到 4096 兜住超长口令，避免超大字段攻击。
+_SEALED_MIN = 64
+_SEALED_MAX = 4096
 
-    零知识：`verifier` 是客户端本地用明文密码派生的「密码验证器」（非明文密码），
-    `kdf_params` 是本地派生配方（后端仅透传存储）。后端永不接触明文密码。
+
+class RegisterRequest(BaseModel):
+    """注册开户请求体，对齐登录提速方案 `{ email, sealed_password, code }`。
+
+    `sealed_password` 是客户端用服务端 X25519 公钥把**明文密码**非对称封装（ECIES）后的 base64
+    （见前端 utils/seal.js / 后端 services/seal.py）。后端解封得明文后慢哈希落库，明文不落盘。
     """
 
     email: EmailStr
-    # 密码验证器（base64 文本）：限定长度上限，避免超大字段；下限保证非空有效派生产物
-    verifier: str = Field(min_length=16, max_length=1024)
-    # 本地密钥派生配方（algorithm/salt/iterations/length 等）；结构由前端约定，后端不解析语义
-    kdf_params: dict[str, Any]
+    # 密码封装（base64）：base64(eph_pub ‖ iv ‖ ciphertext+tag)
+    sealed_password: str = Field(min_length=_SEALED_MIN, max_length=_SEALED_MAX)
     # 邮箱验证码：6 位数字
     code: str = Field(min_length=4, max_length=8)
 
@@ -46,7 +48,7 @@ class RegisterRequest(BaseModel):
     def _normalize(cls, v: str) -> str:
         return _normalize_email(v)
 
-    @field_validator("verifier", "code")
+    @field_validator("sealed_password", "code")
     @classmethod
     def _strip(cls, v: str) -> str:
         """去除首尾空白，避免前端误带空格。"""
@@ -68,26 +70,26 @@ class RegisterResponse(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    """登录解锁请求体，对齐时序图 §3 `{ email, verifier }`。
+    """登录解锁请求体，对齐登录提速方案 `{ email, sealed_password }`。
 
-    `verifier` 即图中的 `verifierProof`：客户端本地用「明文密码 + 注册时的 kdf_params
-    （含 client salt）」重算出的同一个密码验证器（base64，非明文）。字段名与 §2 注册请求体
-    的 `verifier` 保持一致，零知识——后端永不接触明文密码。
+    `sealed_password` 是客户端用服务端公钥把明文密码非对称封装后的 base64（同 RegisterRequest）。
+    后端解封得明文 → 用账户 server_salt 慢哈希 → 与库里 password_verifier 恒定时间比对。
+    无需再先拉 kdf-params（该往返已废除），明文密码不出端的纵深防御由封装提供。
     """
 
     email: EmailStr
-    # 密码验证器（base64 文本）：长度约束与 RegisterRequest.verifier 对齐
-    verifier: str = Field(min_length=16, max_length=1024)
+    # 密码封装（base64）：约束与 RegisterRequest.sealed_password 对齐
+    sealed_password: str = Field(min_length=_SEALED_MIN, max_length=_SEALED_MAX)
 
     @field_validator("email")
     @classmethod
     def _normalize(cls, v: str) -> str:
         return _normalize_email(v)
 
-    @field_validator("verifier")
+    @field_validator("sealed_password")
     @classmethod
     def _strip(cls, v: str) -> str:
-        """去除首尾空白，避免前端误带空格导致比对失败。"""
+        """去除首尾空白，避免前端误带空格导致解封失败。"""
         return v.strip()
 
 
@@ -126,32 +128,22 @@ class RefreshResponse(BaseModel):
 
 
 class ChangePasswordRequest(BaseModel):
-    """修改账户密码请求体，对齐时序图 §5 `{ newVerifier, newSalt }`。
-
-    字段映射（重要）：图中的 `newVerifier` 即本字段 `verifier`，`newSalt`（client salt）
-    并非裸字段，而是内嵌在 `kdf_params` 里（见前端 utils/kdf.js `deriveVerifier` 产出的
-    `{ verifier, kdfParams:{algorithm, salt, iterations, length} }`）。因此改密请求体与
-    §2 注册请求体的 `{ verifier, kdf_params }` 完全同构——客户端用**新密码**本地重派生出新的
-    client salt 与新 verifier，明文密码不出端；后端再自行生成新的 server_salt、用
-    services/verifier.hash_verifier 二次慢哈希后落库，与注册 / 登录的零知识链路保持一致。
+    """修改账户密码请求体，对齐登录提速方案 `{ sealed_old_password, sealed_new_password }`。
 
     身份不在请求体内：调用方须带 `Authorization: Bearer <access>`，userId 由
     get_current_user_id 依赖从 access token 解析（见 api/deps.py），故此处无需 email。
 
-    旧密码校验：新增 `old_verifier`——客户端用**旧密码**本地派生的旧密码验证器（与登录 §3 的
-    verifier 同构）。服务端先对它叠加账户当前 server_salt 慢哈希后与库里 password_verifier
-    做恒定时间比对，确认确为本人持旧密码后才允许改密；不符抛认证失败异常（防枚举 / 防时序）。
+    `sealed_old_password`：客户端用旧密码做的封装，服务端解封后慢哈希与库里 password_verifier
+    恒定时间比对，确认确为本人持旧密码；`sealed_new_password`：新密码的封装，服务端解封后用新
+    server_salt 慢哈希落库。明文密码仅在服务端内存内短暂存在，不落盘。
     """
 
-    # 旧密码验证器（base64 文本）：客户端用旧密码本地派生，服务端校验确为本人持旧密码。
-    # 长度约束与 RegisterRequest.verifier 对齐；恒定时间比对在 service 层完成。
-    old_verifier: str = Field(min_length=16, max_length=1024)
-    # 新密码验证器（base64 文本）：长度约束与 RegisterRequest.verifier 对齐
-    verifier: str = Field(min_length=16, max_length=1024)
-    # 新的本地密钥派生配方（含新 client salt）；后端仅透传存储，不解析语义
-    kdf_params: dict[str, Any]
+    # 旧密码封装（base64）：服务端解封后校验确为本人持旧密码（恒定时间比对在 service 层完成）
+    sealed_old_password: str = Field(min_length=_SEALED_MIN, max_length=_SEALED_MAX)
+    # 新密码封装（base64）
+    sealed_new_password: str = Field(min_length=_SEALED_MIN, max_length=_SEALED_MAX)
 
-    @field_validator("old_verifier", "verifier")
+    @field_validator("sealed_old_password", "sealed_new_password")
     @classmethod
     def _strip(cls, v: str) -> str:
         """去除首尾空白，避免前端误带空格。"""
@@ -172,50 +164,27 @@ class ChangePasswordResponse(BaseModel):
     relogin: bool = True
 
 
-class KdfParamsRequest(BaseModel):
-    """登录前拉取派生配方请求体 `{ email }`。
+class SealPubKeyResponse(BaseModel):
+    """服务端密码封装公钥响应体 `{ public_key }`（GET /auth/seal-pubkey）。
 
-    §3 登录需用注册时的同一份 kdf_params（含 client salt）在本地重算 verifier。
-    salt 并非机密（SRP / 零知识方案中服务端公开返回 salt），故提供此接口让客户端
-    无需在本地持久化即可登录，支持清缓存 / 换设备。
+    public_key 为服务端 X25519 公钥（32 字节原始公钥的 base64）。客户端据此把明文密码封装后上送
+    注册 / 登录 / 改密 / 重置。公钥公开不损安全（私钥永不出端）。
     """
 
-    email: EmailStr
-
-    @field_validator("email")
-    @classmethod
-    def _normalize(cls, v: str) -> str:
-        return _normalize_email(v)
-
-
-class KdfParamsResponse(BaseModel):
-    """派生配方响应体 `{ kdf_params }`。
-
-    邮箱已注册返回其真实 kdf_params；未注册返回**确定性伪配方**（据邮箱推导，
-    同邮箱恒定），使两种响应不可区分，挡邮箱枚举——未注册者据此派生的 verifier
-    在 §3 登录时自然比不中，照常 401。
-    """
-
-    kdf_params: dict[str, Any]
+    public_key: str
 
 
 class ResetPasswordRequest(BaseModel):
-    """忘记密码重置请求体，对齐时序图 §6 `{ email, code, newVerifier, newSalt }`。
+    """忘记密码重置请求体，对齐登录提速方案 `{ email, sealed_new_password, code }`。
 
-    字段映射（重要，与 §2 RegisterRequest 完全对齐，不用图里示意的 newVerifier/newSalt 裸名）：
-      - 图中 `newVerifier` 即本字段 `verifier`：客户端用**新密码**本地零知识派生的新密码验证器；
-      - 图中 `newSalt`（client salt）并非裸字段，而内嵌在 `kdf_params` 里（见前端 utils/kdf.js
-        deriveVerifier 产出的 `{ verifier, kdfParams:{algorithm, salt, iterations, length} }`）；
-      - `server_salt` 不在请求体内，由后端在重置时自行重新生成（见 services/reset_password.py）。
-    因此重置请求体与注册请求体的 `{ email, verifier, kdf_params, code }` 同构——明文密码不出端，
-    后端永不接触明文。身份不靠 token：重置发生在「忘记密码、无法登录」场景，仅凭邮箱验证码授权。
+    身份不靠 token：重置发生在「忘记密码、无法登录」场景，仅凭邮箱验证码授权。
+    `sealed_new_password` 是客户端用**新密码**做的封装；后端解封后生成新 server_salt 慢哈希落库
+    （server_salt 由后端重置时自行重新生成，不在请求体内）。明文密码不落盘。
     """
 
     email: EmailStr
-    # 新密码验证器（base64 文本）：长度约束与 RegisterRequest.verifier 对齐
-    verifier: str = Field(min_length=16, max_length=1024)
-    # 新的本地密钥派生配方（含新 client salt）；后端仅透传存储，不解析语义
-    kdf_params: dict[str, Any]
+    # 新密码封装（base64）：约束与 RegisterRequest.sealed_password 对齐
+    sealed_new_password: str = Field(min_length=_SEALED_MIN, max_length=_SEALED_MAX)
     # 邮箱验证码：与注册同一约束（§1 下发的 6 位数字）
     code: str = Field(min_length=4, max_length=8)
 
@@ -224,7 +193,7 @@ class ResetPasswordRequest(BaseModel):
     def _normalize(cls, v: str) -> str:
         return _normalize_email(v)
 
-    @field_validator("verifier", "code")
+    @field_validator("sealed_new_password", "code")
     @classmethod
     def _strip(cls, v: str) -> str:
         """去除首尾空白，避免前端误带空格。"""

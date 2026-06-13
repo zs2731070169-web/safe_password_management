@@ -138,15 +138,12 @@ async function runVet() {
       const expect = pbkdf2(sha256, stringToUtf8Bytes(v.password), v.salt, { c: v.c, dkLen: v.dkLen })
       if (bytesToHex(native) !== bytesToHex(expect)) {
         vetReason = '原生与 noble 派生结果不一致'
-        console.warn('[pbkdf2] 原生自检不一致，回落 noble')
         return false
       }
     }
-    console.log('[pbkdf2] 原生 PBKDF2 加速已启用（UTS 插件）')
     return true
   } catch (e) {
     vetReason = (e && e.message) || String(e)
-    console.warn('[pbkdf2] 原生自检异常，回落 noble：', vetReason)
     return false
   }
   // #endif
@@ -163,34 +160,6 @@ export async function ensureNativeVetted() {
   return nativeEnabled
 }
 
-/**
- * 【调试用，确认后可移除】返回一段人类可读的自检结论，供 App 端启动弹窗展示——
- * 在 console / adb 都不可用的真机上，用屏幕弹窗确认原生是否生效及实测耗时。
- * 若已启用，实测一次「真实迭代数」的原生派生并计时（原生为几十毫秒级，远低于 noble 的数秒）。
- * @param {number} iterations 用于计时的迭代数（传业务真实值，如 600000）
- * @returns {Promise<string>}
- */
-export async function debugVetText(iterations) {
-  const enabled = await ensureNativeVetted()
-  // #ifndef APP-PLUS
-  return enabled ? '原生已启用' : 'H5：走原生 WebCrypto'
-  // #endif
-  // #ifdef APP-PLUS
-  if (!enabled) {
-    return `⚠️ 原生 PBKDF2 未启用，已回落 noble（正确但慢）\n原因：${vetReason || '原生不可用'}`
-  }
-  try {
-    const pw = stringToUtf8Bytes('benchmark-密码Aa1!')
-    const salt = new Uint8Array(16)
-    const t0 = Date.now()
-    nativePbkdf2(pw, salt, iterations, 32)
-    const ms = Date.now() - t0
-    return `✅ 原生 PBKDF2 已启用（UTS 插件）\n${iterations} 次派生实测 ≈ ${ms}ms`
-  } catch (e) {
-    return `原生已通过自检但计时异常：${(e && e.message) || e}`
-  }
-  // #endif
-}
 
 // --------------------------------------------------------------------------- //
 // 对外调度器：cryptoPolyfill 的 deriveBits / deriveKey 统一经此算 PBKDF2
@@ -212,7 +181,6 @@ export async function pbkdf2Sha256(passwordBytes, saltBytes, iterations, dkLen) 
       return nativePbkdf2(passwordBytes, saltBytes, iterations, dkLen)
     } catch (e) {
       // 运行期偶发异常：仅本次回落 noble，不推翻已通过的自检结论
-      console.warn('[pbkdf2] 原生派生异常，本次回落 noble：', (e && e.message) || e)
     }
   }
   // #endif

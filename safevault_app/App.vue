@@ -1,12 +1,9 @@
 <script>
-import { watch } from 'vue'
-import { storeToRefs } from 'pinia'
 import { useLocalPersist } from '@/composables/useLocalPersist'
 import { useCloudHydrate } from '@/composables/useCloudHydrate'
 import { useCloudBackup } from '@/composables/useCloudBackup'
 import { installNavigationGuard } from '@/utils/guard'
-import { useCloudAccountStore } from '@/stores/cloudAccount'
-import { useSettingsStore } from '@/stores/settings'
+import { setupAutoLock, onAppForeground, onAppBackground } from '@/utils/autoLock'
 
 /**
  * App.vue —— 应用根（uni-app）
@@ -24,11 +21,12 @@ import { useSettingsStore } from '@/stores/settings'
  *   故彻底移除自定义监听，回归框架内置返回栈：子页返回即 navigateBack 收回（pop-out 右滑回），
  *   根页（home）返回为框架默认的「再按一次退出应用」，正是期望行为，且比旧的直接退出更安全。
  *
- * 为何不直接在此调 useAutoLock 这个 composable：
- *   它依赖 onMounted 注册监听，而 **uni-app 的 App.vue 没有视图、onMounted 不触发**。
- *   故把自动锁定所需的应用级监听（uni.onAppShow/onAppHide）直接落到 App.vue 的
- *   onLaunch / onShow / onHide 应用生命周期里手动驱动，保证 App 端可靠。
- *   useLocalPersist 只用 watch（不依赖 onMounted），在 onLaunch 里调用即激活。
+ * 自动锁定为何抽成 utils/autoLock 单例、由 App.vue 生命周期驱动：
+ *   原 useAutoLock composable 依赖 onMounted 注册监听，而 **uni-app 的 App.vue 没有视图、
+ *   onMounted 不触发**，故从未生效。改为模块级单例 utils/autoLock：状态挂在模块作用域，
+ *   App.vue 在 onLaunch 调 setupAutoLock()、onShow/onHide 调 onAppForeground/onAppBackground 驱动；
+ *   单例对外暴露 notifyActivity() 作为「用户活动」统一入口，由全局 mixin（main.js）/ 导航工具 /
+ *   页面触摸喂入活动信号，实现「操作中不锁、闲置才锁」。useLocalPersist 只用 watch，onLaunch 内调用即激活。
  */
 export default {
   onLaunch() {
@@ -54,102 +52,20 @@ export default {
       console.error('[App] 云端水合/备份初始化失败：', e)
     }
 
-    // 3) 自动锁定：注册前后台监听 + 启动空闲计时（见 setupAutoLock）
-    this.setupAutoLock()
+    // 3) 自动锁定：初始化单例（注册登录态/时长 watch + 启动空闲计时；H5 端额外挂 DOM 活动监听）
+    setupAutoLock()
 
     // 系统返回不再自行接管：交还 uni-app 框架内置返回栈（见顶部注释）。
   },
 
   onShow() {
     // 回到前台：自动锁定的「熄屏停留超阈值即锁」判断
-    this.onAppForeground()
+    onAppForeground()
   },
 
   onHide() {
     // 进入后台/熄屏：停止前台计时并记录时刻
-    this.onAppBackground()
-  },
-
-  methods: {
-    /** —— 自动锁定：前后台 + 空闲计时 —— */
-    setupAutoLock() {
-      this._idleTimer = null
-      this._hiddenAt = 0
-      // 登录态 / 时长变化即时重置计时：登录成功后启动空闲计时，锁定后停止，改时长即时生效
-      try {
-        const { loggedIn } = storeToRefs(useCloudAccountStore())
-        const { autoLockSeconds } = storeToRefs(useSettingsStore())
-        watch([loggedIn, autoLockSeconds], () => this._resetIdleTimer())
-      } catch (e) {
-        console.error('[App] 自动锁定监听注册失败：', e)
-      }
-      this._resetIdleTimer()
-    },
-
-    /** 当前自动锁定时长（秒，0 = 永不锁定） */
-    _lockSeconds() {
-      try {
-        return useSettingsStore().autoLockSeconds || 0
-      } catch {
-        return 0
-      }
-    },
-
-    /** 是否已登录解锁 */
-    _isUnlocked() {
-      try {
-        return useCloudAccountStore().loggedIn
-      } catch {
-        return false
-      }
-    },
-
-    _clearIdleTimer() {
-      if (this._idleTimer) {
-        clearTimeout(this._idleTimer)
-        this._idleTimer = null
-      }
-    },
-
-    /** 执行锁定并回登录页 */
-    _doLock() {
-      this._clearIdleTimer()
-      if (!this._isUnlocked()) return
-      try {
-        useCloudAccountStore().lock()
-      } catch (e) {
-        console.error('[App] 自动锁定 lock 失败：', e)
-      }
-      // 清栈回登录页（reLaunch 不在守卫拦截误伤——unlock 非受保护页）
-      uni.reLaunch({ url: '/pages/unlock/index' })
-    },
-
-    /** 重启前台空闲计时（已登录且时长 > 0 时） */
-    _resetIdleTimer() {
-      this._clearIdleTimer()
-      const seconds = this._lockSeconds()
-      if (!this._isUnlocked() || seconds <= 0) return
-      this._idleTimer = setTimeout(() => this._doLock(), seconds * 1000)
-    },
-
-    /** 进入后台：停计时、记录时刻 */
-    onAppBackground() {
-      if (!this._isUnlocked()) return
-      this._clearIdleTimer()
-      this._hiddenAt = Date.now()
-    },
-
-    /** 回到前台：后台停留超阈值立即锁，否则重启计时 */
-    onAppForeground() {
-      if (!this._isUnlocked()) return
-      const seconds = this._lockSeconds()
-      if (seconds > 0 && this._hiddenAt && Date.now() - this._hiddenAt >= seconds * 1000) {
-        this._doLock()
-      } else {
-        this._resetIdleTimer()
-      }
-      this._hiddenAt = 0
-    }
+    onAppBackground()
   }
 }
 </script>

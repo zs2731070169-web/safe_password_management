@@ -15,6 +15,8 @@
  * @see pages.json 路由表与映射规则
  */
 
+import { notifyActivity } from '@/utils/autoLock'
+
 /**
  * 源路由 name → uni 页面路径（不含前导斜杠，uni url 以 pages/ 开头）。
  * 与 vue-router 的 SHEET_ROUTES / Tab 命名一一对应。
@@ -93,6 +95,7 @@ function buildQuery(params) {
 export function navTo(name, params) {
   const url = buildUrl(name, params)
   if (!url) return
+  notifyActivity() // 任何页面跳转都视为用户操作，重置自动锁定空闲计时
   if (TAB_NAMES.has(name) || RELAUNCH_NAMES.has(name)) {
     uni.reLaunch({ url })
   } else {
@@ -109,6 +112,7 @@ export function navTo(name, params) {
 export function navReplace(name, params) {
   const url = buildUrl(name, params)
   if (!url) return
+  notifyActivity() // 重定向同属用户导航操作，重置自动锁定空闲计时
   if (RELAUNCH_NAMES.has(name) || TAB_NAMES.has(name)) {
     uni.reLaunch({ url })
   } else {
@@ -134,6 +138,7 @@ export function navBack(delta = 1) {
   const pages = getCurrentPages()
   if (pages.length > 1) {
     _lastNavBackAt = now
+    notifyActivity() // 返回上一页同属用户操作，重置自动锁定空闲计时
     uni.navigateBack({ delta })
   }
   // 栈底(如直接落在 Tab 页)无可返回：交由调用方/系统返回逻辑处理，这里不强退

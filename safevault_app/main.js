@@ -3,7 +3,8 @@ import { createSSRApp } from 'vue'
 import { createPinia } from 'pinia'
 import { installStoragePolyfill } from '@/utils/storagePolyfill'
 import { installCryptoPolyfill } from '@/utils/cryptoPolyfill'
-import { ensureNativeVetted, debugVetText } from '@/utils/nativePbkdf2'
+import { ensureNativeVetted } from '@/utils/nativePbkdf2'
+import { notifyActivity } from '@/utils/autoLock'
 import './uni.promisify.adaptor'
 
 // App 端无 localStorage：在任何 store/service 初始化之前注入跨端存储垫片，
@@ -20,24 +21,26 @@ installCryptoPolyfill()
 // 自检很轻（小迭代两条向量），失败也只是回落，不阻塞启动。H5 端为 no-op。
 ensureNativeVetted()
 
-// 【调试用，确认后移除】App 端启动弹窗显示 PBKDF2 自检结论 + 原生实测耗时。
-// 这台真机 console / adb 都不可靠，用屏幕弹窗直接确认原生是否生效、登录是否提速。H5 端不弹。
-// #ifdef APP-PLUS
-debugVetText(600000)
-  .then((text) => {
-    try {
-      uni.showModal({ title: 'PBKDF2 自检（调试）', content: text, showCancel: false })
-    } catch (_) {}
-  })
-  .catch(() => {})
-// #endif
-
 // uni-app Vue3 标准启动：导出 createApp，由框架调用挂载
 export function createApp() {
   const app = createSSRApp(App)
   // 挂载 Pinia：逻辑层（stores/）经此提供全局状态，store 签名与 mock 边界保持与源工程一致
   const pinia = createPinia()
   app.use(pinia)
+
+  // 全局活动信号：自动锁定改为「距用户最后一次操作满 N 秒才锁」，需在所有页面感知用户操作。
+  // App 端逻辑层无全局 DOM 事件，故用全局 mixin 把 uni 页面级生命周期当作活动信号喂给 autoLock：
+  //   - onShow：切页 / 切回 Tab（用户在导航操作）；
+  //   - onPageScroll：列表滚动（节流已在 notifyActivity 内部，不会高频 clear/set）。
+  // 触摸点击/输入由主停留页根 view 的 @touchstartcapture 补充，导航跳转由 utils/navigation 补充。
+  app.mixin({
+    onShow() {
+      notifyActivity()
+    },
+    onPageScroll() {
+      notifyActivity()
+    }
+  })
 
   // 全局错误兜底：真机上渲染 / 逻辑异常默认表现为「白屏 / 闪退」且无可见信息，难以定位。
   // 这里统一捕获并打日志；App 端再弹窗把错误展示到屏幕，便于现场排查（定位完成后可移除弹窗块）。

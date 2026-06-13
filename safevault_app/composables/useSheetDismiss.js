@@ -1,5 +1,6 @@
 import { ref, computed } from 'vue'
 import { navBack } from '@/utils/navigation'
+import { notifyActivity } from '@/utils/autoLock'
 
 // 边缘左滑收回手势：App 与 H5 两端均启用。
 //
@@ -87,6 +88,10 @@ export function useSheetDismiss(options = {}) {
   })
 
   function onTouchStart(e) {
+    // 用户在 SHEET 子页内任意触摸都算「操作」，重置自动锁定空闲计时（与下方收回手势判定无关，
+    // 故置于最前、无条件触发）。本 composable 被全部 SHEET 子页共用，一处即覆盖详情/新增/编辑/
+    // 改密/恢复码/回收站/分类等页的页面内触摸。
+    notifyActivity()
     if (phase.value === 'closing') return
     // 清掉上一手势可能残留的卡死状态（如被系统打断未走 touchend 时，phase 停在 dragging、
     // 页面仍带位移）：新手势起手即复位，避免页面卡在半收回处或干扰本次判定。

@@ -13,8 +13,6 @@ from client.db_client import get_session
 from schemas.auth import (
     ChangePasswordRequest,
     ChangePasswordResponse,
-    KdfParamsRequest,
-    KdfParamsResponse,
     LoginRequest,
     LoginResponse,
     LogoutRequest,
@@ -25,16 +23,18 @@ from schemas.auth import (
     RegisterResponse,
     ResetPasswordRequest,
     ResetPasswordResponse,
+    SealPubKeyResponse,
     TokenPair,
     VerifyCodeRequest,
     VerifyCodeResponse,
 )
 from services.change_password import change_password as change_password_service
-from services.login import get_login_kdf_params, login_account
+from services.login import login_account
 from services.rate_limit import enforce_send_code_limit
 from api.deps import rate_limit
 from services.register import register_account
 from services.reset_password import reset_account
+from services.seal import get_server_public_key_b64
 from services.token import revoke_single_refresh_token, rotate_refresh_token
 from services.verify_code import send_verify_code
 
@@ -71,45 +71,35 @@ async def register(
 ) -> RegisterResponse:
     """注册开户（注册即登录）。
 
-    流程对齐时序图 §2：
+    流程对齐时序图 §2（认证已改为非对称封装上送密码）：
       1) 限流（IP 维度）→ 超限抛 429（已在路由依赖 rate_limit("register") 前置拦截）
-      2) 校验验证码 → 缺失/不符抛 400「验证码错误或已过期」
-      3) 查重 → 已注册抛 409「该邮箱已注册」
-      4) 生成 server_salt、服务端慢哈希 verifier 后落库
-      5) DEL code:{email}（用后即焚）
-      6) 签发 access(15min)+refresh(30d)，refresh 写入 Redis 白名单
-      7) 返回 201 { tokens, userId }
+      2) 解封密码 → 封装非法抛 400「密码封装无效」
+      3) 校验验证码 → 缺失/不符抛 400「验证码错误或已过期」
+      4) 查重 → 已注册抛 409「该邮箱已注册」
+      5) 生成 server_salt、服务端慢哈希明文密码后落库
+      6) DEL code:{email}（用后即焚）
+      7) 签发 access(15min)+refresh(30d)，refresh 写入 Redis 白名单
+      8) 返回 201 { tokens, userId }
     """
-    # 2~7) 业务编排（校验码 → 查重 → 落库 → 删码 → 签发 token）
+    # 2~8) 业务编排（解封密码 → 校验码 → 查重 → 落库 → 删码 → 签发 token）
     result = await register_account(
         session=session,
         email=payload.email,
-        verifier=payload.verifier,
-        kdf_params=payload.kdf_params,
+        sealed_password=payload.sealed_password,
         code=payload.code,
     )
     return RegisterResponse(**result)
 
 
-@router.post(
-    "/kdf-params",
-    response_model=KdfParamsResponse,
-    dependencies=[Depends(rate_limit("login"))],  # 1) 限流（与登录共用 IP 阈值，防批量探测）
-)
-async def kdf_params(
-    payload: KdfParamsRequest,
-    session: AsyncSession = Depends(get_session),
-) -> KdfParamsResponse:
-    """登录前拉取派生配方（§3 前置）。
+@router.get("/seal-pubkey", response_model=SealPubKeyResponse)
+async def seal_pubkey() -> SealPubKeyResponse:
+    """下发服务端密码封装公钥（登录提速方案前置）。
 
-    客户端无需在本地持久化 kdf_params 即可登录（支持清缓存 / 换设备）：
-      1) 限流（IP 维度，复用登录限流）→ 超限抛 429（已在路由依赖前置拦截）
-      2) 按邮箱取 kdf_params；未注册返回确定性伪配方（挡邮箱枚举，见 service）
-    salt 非机密，公开返回符合零知识 / SRP 惯例。
+    客户端在注册 / 登录 / 改密 / 重置前拉取一次本公钥，用它把明文密码非对称封装（ECIES）后上送，
+    后端用对应私钥解封。公钥公开不损安全（私钥永不出端），故无需鉴权、可缓存。
+    与旧 /auth/kdf-params 不同：这里不按邮箱返回、无邮箱枚举面，故不挂限流。
     """
-    # 2) 取真实 / 伪造 kdf_params（结构一致，不可区分）
-    params = await get_login_kdf_params(session=session, email=payload.email)
-    return KdfParamsResponse(kdf_params=params)
+    return SealPubKeyResponse(public_key=get_server_public_key_b64())
 
 
 @router.post(
@@ -123,18 +113,19 @@ async def login(
 ) -> LoginResponse:
     """登录解锁。
 
-    流程对齐时序图 §3：
+    流程对齐时序图 §3（认证已改为非对称封装上送密码）：
       1) 限流（IP 维度）→ 超限抛 429（已在路由依赖 rate_limit("login") 前置拦截）
-      2) 读 fail:{email} 失败计数 → 达阈值抛 423「账户暂时锁定，请稍后」
-      3) 按邮箱取 server_salt / password_verifier / status
-      4) 邮箱不存在 / 验证器不符 / 账户停用 → INCR fail（TTL 15min）→ 抛 401「邮箱或密码不正确」
-      5) 校验通过 → DEL fail 清零 → 签发 access(15min)+refresh(30d) → 返回 200 { tokens, userId }
+      2) 解封密码 → 封装非法抛 400「密码封装无效」
+      3) 读 fail:{email} 失败计数 → 达阈值抛 423「账户暂时锁定，请稍后」
+      4) 按邮箱取 server_salt / password_verifier / status
+      5) 邮箱不存在 / 口令不符 / 账户停用 → INCR fail（TTL 15min）→ 抛 401「邮箱或密码不正确」
+      6) 校验通过 → DEL fail 清零 → 签发 access(15min)+refresh(30d) → 返回 200 { tokens, userId }
     """
-    # 2~5) 业务编排（锁定判定 → 取账户 → 恒定时间比对 → 计 fail / 清零 → 签发 token）
+    # 2~6) 业务编排（解封密码 → 锁定判定 → 取账户 → 恒定时间比对 → 计 fail / 清零 → 签发 token）
     result = await login_account(
         session=session,
         email=payload.email,
-        verifier=payload.verifier,
+        sealed_password=payload.sealed_password,
     )
     return LoginResponse(**result)
 
@@ -187,13 +178,12 @@ async def change_password(
     { success, relogin }，前端据此清本地 token、跳登录页用新密码重登（详见
     services/change_password.py 与 schemas.ChangePasswordResponse）。
     """
-    # 2~6) 业务编排（旧密码核验 → 新旧相同校验 → 重算落库 → 全量会话立即失效）
+    # 2~6) 业务编排（解封旧/新密码 → 旧密码核验 → 新旧相同校验 → 重算落库 → 全量会话立即失效）
     result = await change_password_service(
         session=session,
         user_id=user_id,
-        old_verifier=payload.old_verifier,
-        verifier=payload.verifier,
-        kdf_params=payload.kdf_params,
+        sealed_old_password=payload.sealed_old_password,
+        sealed_new_password=payload.sealed_new_password,
     )
     return ChangePasswordResponse(**result)
 
@@ -224,12 +214,11 @@ async def reset_password(
     在重置成功后随即用新密码走一次 §3 登录拿合法会话。决策点 C 取 C2：旧整库 blob 不作废，客户端用
     恢复码 GET /backup/recovery-blob 解出 DataKey、以新密码重新包裹并重传 PUT /backup 即可恢复云备份。
     """
-    # 2~7) 业务编排（校验码 → 查账户 → 重算落库 → 删码 → 全量吊销 → C1 返回）
+    # 2~7) 业务编排（解封新密码 → 校验码 → 查账户 → 重算落库 → 删码 → 全量吊销 → C2 返回）
     result = await reset_account(
         session=session,
         email=payload.email,
-        verifier=payload.verifier,
-        kdf_params=payload.kdf_params,
+        sealed_new_password=payload.sealed_new_password,
         code=payload.code,
     )
     return ResetPasswordResponse(**result)

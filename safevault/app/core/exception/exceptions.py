@@ -86,6 +86,17 @@ class SamePasswordError(AppError):
     status_code = 400
 
 
+class SealDecryptError(AppError):
+    """认证密码封装（sealed-box）解封失败，统一对外 400「密码封装无效」。
+
+    登录提速方案下，客户端用服务端公钥把明文密码非对称封装后上送（见 services/seal.py）。
+    封装格式非法 / GCM 校验不过 / 客户端用了过期公钥等情形一律抛此异常，不区分具体原因，
+    避免给攻击者构造性反馈。前端遇此应重新拉取 GET /auth/seal-pubkey 后重试。
+    """
+
+    status_code = 400
+
+
 class TokenInvalidError(AppError):
     """refresh token 非法，统一对外 401「请重新登录」。
 

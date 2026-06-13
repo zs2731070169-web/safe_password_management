@@ -1,8 +1,10 @@
 """云账户 ORM 模型（模块 1）。
 
-映射 base/schema.sql 的 `account` 表 —— 应用唯一身份中枢。零知识：只存
-password_verifier（服务端再叠加 server_salt 慢哈希后的产物），不存明文、不可还原密钥。
-字段定义须与 schema.sql 严格一致（列名 / 类型 / 约束），建表脚本据本模型 create_all。
+映射 base/schema.sql 的 `account` 表 —— 应用唯一身份中枢。认证已改为「客户端用服务端公钥
+非对称封装明文密码上送 → 后端解封 → 叠加 server_salt 慢哈希落库」：password_verifier 列存
+「明文密码 + server_salt」的 PBKDF2 慢哈希（非明文、库泄露也无法低成本离线还原口令）。保险库
+本身仍零知识（DataKey 在客户端本地派生 / 加解密，后端永不接触）。字段定义须与 schema.sql
+严格一致（列名 / 类型 / 约束），建表脚本据本模型 create_all。
 """
 from __future__ import annotations
 
@@ -43,19 +45,20 @@ class Account(Base, TimestampMixin):
         comment="服务端盐（base64），用于密码验证器的慢哈希",
     )
 
-    # 密码验证器（base64）：客户端 verifier 叠加 server_salt 慢哈希后的结果。
-    # 零知识，非明文、不可还原 MasterKey。
+    # 口令慢哈希（base64）：解封后的明文密码叠加 server_salt 做 PBKDF2-HMAC-SHA256 的结果。
+    # 非明文、不可还原口令；列名沿用 password_verifier 仅为兼容既有 schema 与引用。
     password_verifier: Mapped[str] = mapped_column(
         String(1024),
         nullable=False,
-        comment="密码验证器（base64），零知识，非明文、不可还原密钥",
+        comment="口令慢哈希（base64）：明文密码叠加 server_salt 的 PBKDF2 摘要，非明文不可还原",
     )
 
-    # 本地密钥派生配方（algorithm/salt/iterations 等），后端仅透传存储，不参与计算
+    # 认证零知识废除后该列已无认证语义，仅存一个 scheme 标记（如 {"scheme":"sealed-v1"}）
+    # 满足 NOT NULL 约束并为未来账户体系演进留痕；不参与任何计算。
     kdf_params: Mapped[dict[str, Any]] = mapped_column(
         JSON,
         nullable=False,
-        comment="本地密钥派生配方（JSON），后端仅透传，不参与计算",
+        comment="账户体系标记（JSON，如 {\"scheme\":\"sealed-v1\"}），不参与计算",
     )
 
     # 账户状态：1=正常 0=停用（临时锁定走 Redis fail 计数，不落此字段）

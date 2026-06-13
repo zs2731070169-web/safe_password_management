@@ -40,9 +40,10 @@ from core.exception.exceptions import (
 )
 from models.account import Account
 from services.token import invalidate_all_sessions
-# 与注册 / 登录 / 重置共用同一套 server_salt 生成与 verifier 慢哈希实现，杜绝算法漂移
+# 与注册 / 登录 / 重置共用同一套 server_salt 生成与口令慢哈希实现，杜绝算法漂移
 # （详见 services/verifier.py）。
-from services.verifier import generate_server_salt, hash_verifier
+from services.verifier import generate_server_salt, hash_password
+from services.seal import decrypt_sealed
 
 logger = logging.getLogger("safevault.auth")
 
@@ -50,50 +51,52 @@ logger = logging.getLogger("safevault.auth")
 async def change_password(
     session: AsyncSession,
     user_id: int,
-    old_verifier: str,
-    verifier: str,
-    kdf_params: dict[str, Any],
+    sealed_old_password: str,
+    sealed_new_password: str,
 ) -> dict[str, Any]:
     """修改账户密码主流程，返回 { success: True, relogin: True }（不返回 token）。
 
     :param session: 异步数据库会话（由路由依赖注入，事务化，退出自动提交）
     :param user_id: 当前登录用户 id（由 access token 解析并比对 version 后得到，见 api/deps.py）
-    :param old_verifier: 客户端用旧密码本地派生的旧密码验证器（base64，非明文），用于核验持旧密码
-    :param verifier: 客户端用新密码本地派生的新密码验证器（base64，非明文）
-    :param kdf_params: 新的本地密钥派生配方（含新 client salt，后端仅透传存储）
+    :param sealed_old_password: 客户端用旧密码做的封装（base64），解封后核验确为本人持旧密码
+    :param sealed_new_password: 客户端用新密码做的封装（base64），解封后落库
     :returns: {"success": True, "relogin": True}
+    :raises SealDecryptError: 密码封装无效（400）
     :raises TokenInvalidError: userId 对应账户不存在（账户失效，401）
-    :raises OldPasswordError: 旧密码验证器不符（401「旧密码不正确」）
+    :raises OldPasswordError: 旧密码不符（401「旧密码不正确」）
     :raises SamePasswordError: 新密码与旧密码相同（400）
     """
+    # 步骤 0：解封旧 / 新明文密码（封装非法 → SealDecryptError 400）。明文仅内存内短暂存在、不落盘。
+    old_password = decrypt_sealed(sealed_old_password)
+    new_password = decrypt_sealed(sealed_new_password)
+
     # 步骤 1：按主键取账户对象（需可写，故取整行 ORM 实体而非标量列）。
     # 取不到说明 token 里的 userId 已失效（账户被删等）：按登录态失效处理，统一 401。
     account = await session.get(Account, user_id)
     if account is None:
         raise TokenInvalidError("登录态无效，请重新登录")
 
-    # 步骤 2：旧密码核验——对 old_verifier 叠加账户**当前** server_salt 慢哈希后恒定时间比对。
+    # 步骤 2：旧密码核验——对旧明文叠加账户**当前** server_salt 慢哈希后恒定时间比对。
     # 不符即拒：身份虽已由 access token 确认，但改密这一敏感操作要求二次证明「确实掌握旧密码」，
     # 防 access 被借用 / 会话劫持后被改密。compare_digest 抹平时序侧信道。
-    computed_old = hash_verifier(old_verifier, account.server_salt)
+    computed_old = hash_password(old_password, account.server_salt)
     if not secrets.compare_digest(computed_old, account.password_verifier):
-        # 不记录任何 verifier 明文 / 密文，仅记 userId 与事件，便于安全审计且不泄露敏感数据。
+        # 不记录任何口令明文 / 密文，仅记 userId 与事件，便于安全审计且不泄露敏感数据。
         logger.warning("改密失败：旧密码不正确 userId=%s", user_id)
         raise OldPasswordError("旧密码不正确")
 
-    # 步骤 3：新旧相同校验——用**当前** server_salt 对新 verifier 同款慢哈希，等于库里即视为未改。
+    # 步骤 3：新旧相同校验——用**当前** server_salt 对新明文同款慢哈希，等于库里即视为未改。
     # 必须用当前 server_salt（与库里 password_verifier 同盐）才可直接比对；落库时再换新盐（步骤 4）。
-    computed_new_old_salt = hash_verifier(verifier, account.server_salt)
+    computed_new_old_salt = hash_password(new_password, account.server_salt)
     if secrets.compare_digest(computed_new_old_salt, account.password_verifier):
         logger.info("改密被拒：新旧密码相同 userId=%s", user_id)
         raise SamePasswordError("新密码不能与旧密码相同")
 
-    # 步骤 4：生成新的 server_salt，对新 verifier 二次慢哈希后更新三列（与注册 / 登录 / 重置同实现）。
+    # 步骤 4：生成新的 server_salt，对新明文二次慢哈希后更新两列（与注册 / 登录 / 重置同实现）。
     # 直接改已加载 ORM 实体属性 → SQLAlchemy 在 flush 时生成 UPDATE；事务由 get_session 收尾提交。
     server_salt = generate_server_salt()
     account.server_salt = server_salt
-    account.password_verifier = hash_verifier(verifier, server_salt)
-    account.kdf_params = kdf_params
+    account.password_verifier = hash_password(new_password, server_salt)
     await session.flush()
 
     # 步骤 5：全量会话失效（方案 B）——token_version 自增使旧 access 立即失效 + 同步缓存 + 清

@@ -35,9 +35,9 @@ USE `safevault`;
 CREATE TABLE IF NOT EXISTS `account` (
     `id`               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '账户主键，即时序图中的 userId',
     `email`            VARCHAR(255)    NOT NULL                COMMENT '登录邮箱，已归一化（去空格 + 转小写）',
-    `server_salt`      VARCHAR(128)    NOT NULL                COMMENT '服务端盐（base64），用于密码验证器的慢哈希；改密/重置时更新',
-    `password_verifier` VARCHAR(1024)  NOT NULL                COMMENT '密码验证器（base64），如 SRP verifier 或「密码+server_salt」慢哈希；零知识，非明文、不可还原密钥',
-    `kdf_params`       JSON            NOT NULL                COMMENT '本地密钥派生配方（algorithm/salt/iterations 等），换机后据此重算 MasterKey；后端仅透传，不参与计算',
+    `server_salt`      VARCHAR(128)    NOT NULL                COMMENT '服务端盐（base64），用于明文密码的服务端慢哈希；改密/重置时更新',
+    `password_verifier` VARCHAR(1024)  NOT NULL                COMMENT '口令慢哈希（base64）：客户端非对称封装上送、后端解封得明文后叠加 server_salt 的 PBKDF2 摘要；非明文、不可还原。列名沿用兼容',
+    `kdf_params`       JSON            NOT NULL                COMMENT '账户体系标记（JSON，如 {"scheme":"sealed-v1"}）；认证零知识废除后不参与计算，仅满足 NOT NULL 并留痕',
     `status`           TINYINT         NOT NULL DEFAULT 1      COMMENT '账户状态：1=正常 0=停用（临时锁定走 Redis fail 计数，不落此字段）',
     `token_version`    BIGINT UNSIGNED NOT NULL DEFAULT 1      COMMENT '令牌版本号：access 签发时写入 payload(tv)，每次鉴权比对账户当前值，不一致即拒；改密/重置时自增 → 旧 access 立即失效。运行期缓存到 Redis(tokenver:{userId})',
     `created_at`       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP                          COMMENT '注册时间',
@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS `account` (
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_unicode_ci
-  COMMENT = '云账户：身份凭据（仅密码验证器，零知识）';
+  COMMENT = '云账户：身份凭据（口令服务端慢哈希落库，非明文）';
 
 -- -----------------------------------------------------------------------------
 -- 模块 2：加密备份 blob 存储（核心业务后端）
