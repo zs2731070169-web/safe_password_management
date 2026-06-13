@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import uni from '@dcloudio/vite-plugin-uni'
+import gapFallback from './scripts/postcss-gap-fallback.cjs'
 
 // uni-app CLI 构建配置（与 HBuilderX 工程结构并存）
 // 说明：
@@ -13,6 +14,12 @@ import uni from '@dcloudio/vite-plugin-uni'
 // https://uniapp.dcloud.net.cn/quickstart-cli.html
 export default defineConfig({
   plugins: [uni()],
+  // PostCSS 插件：为 Flexbox gap 添加 margin 回退，兼容 Chrome <84 / 旧 Android WebView
+  css: {
+    postcss: {
+      plugins: [gapFallback()]
+    }
+  },
   // H5 开发服务器（dev:h5）：与源工程 safevault_ui 一致，固定端口 5180 并把 /safevault 根反向代理到
   // 本地后端（默认 8000），绕过浏览器跨域。services/http.js 在 dev 留空 VITE_API_BASE_URL 走同源相对路径，
   // 故必须有这条 proxy 才能让登录 / 备份等 /safevault/* 请求真正打到后端（否则请求 404、登录无响应）。

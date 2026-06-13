@@ -1,0 +1,36 @@
+# 依赖与缓存
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# 版本控制
+.git/
+.gitignore
+
+# 配置与密钥（运行时通过 env_file / environment 注入，不进镜像）
+.env
+.env.*
+
+# 开发/测试
+tests/
+db/
+
+# 文档
+*.md
+
+# 脚本（Docker 内不走这些）
+run.sh
+
+# IDE
+.vscode/
+.idea/
+
+# Docker 自身
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# 前端构建产物（由 Nginx 容器挂载，不进后端镜像）
+dist/
+nginx/

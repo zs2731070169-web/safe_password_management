@@ -1,9 +1,13 @@
-# 本地联调基础设施：MySQL + Redis + RabbitMQ
-# 启动：docker compose up -d
-# MySQL：localhost:3306（safevault / safevault，库名 safevault；root 密码 root）
-# RabbitMQ 管理台：http://localhost:15672 （默认 guest / guest）
+# SafeVault 全栈 Docker Compose 配置
+#
+# 开发环境（仅基础设施）：docker compose up -d mysql redis rabbitmq minio
+# 生产部署（全栈）：       docker compose up -d --build
+#
+# 密码说明：开发默认值已内联；生产部署请修改 .env 文件中的对应变量。
 
 services:
+  # ==================== 基础设施 ====================
+
   # 持久化主库：云账户与认证（模块 1）、加密备份 blob（模块 2）、恢复凭据（模块 3 C2）
   mysql:
     image: mysql:8.4
@@ -11,10 +15,10 @@ services:
     ports:
       - "3306:3306"
     environment:
-      MYSQL_ROOT_PASSWORD: root
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:-root}"
       MYSQL_DATABASE: safevault
       MYSQL_USER: safevault
-      MYSQL_PASSWORD: safevault
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:-safevault}"
       TZ: Asia/Shanghai
     # 统一 utf8mb4，避免 emoji / 多语种乱码；密文 blob 与邮箱均安全存储
     command:
@@ -24,7 +28,7 @@ services:
       - mysql-data:/var/lib/mysql
     healthcheck:
       # 库就绪才算健康，便于 app / 建表脚本依赖等待
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u safevault -psafevault --silent"]
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u safevault -p${MYSQL_PASSWORD:-safevault} --silent"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -35,7 +39,7 @@ services:
     container_name: safevault-redis
     ports:
       - "6379:6379"
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-safevault}"]
     volumes:
       - redis-data:/data
     restart: unless-stopped
@@ -47,8 +51,8 @@ services:
       - "5672:5672"     # AMQP 协议端口
       - "15672:15672"   # 管理台 Web 端口
     environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_DEFAULT_USER:-guest}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_DEFAULT_PASS:-guest}"
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
     restart: unless-stopped
@@ -60,11 +64,80 @@ services:
       - "9000:9000"
       - "9001:9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-minioadmin}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-minioadmin}"
     command: server /data --console-address ":9001"
     volumes:
       - minio-data:/data
+    restart: unless-stopped
+
+  # ==================== 应用服务 ====================
+
+  # FastAPI API 服务
+  api:
+    build: .
+    container_name: safevault-api
+    # 生产环境无需暴露端口（走 Nginx 代理）；本地调试时可取消注释
+    # ports:
+    #   - "8000:8000"
+    env_file: .env
+    environment:
+      # 以下四项覆盖 .env 中的连接地址，确保 Docker 内部网络使用服务名
+      # 其余配置项（JWT、Brevo、限流等）由 .env 文件提供，无需在此重复
+      DATABASE_URL: "mysql+asyncmy://safevault:${MYSQL_PASSWORD:-safevault}@mysql:3306/safevault"
+      REDIS_URL: "redis://:${REDIS_PASSWORD:-safevault}@redis:6379/0"
+      RABBITMQ_URL: "amqp://${RABBITMQ_DEFAULT_USER:-guest}:${RABBITMQ_DEFAULT_PASS:-guest}@rabbitmq:5672/"
+      OSS_ENDPOINT: "http://minio:9000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      rabbitmq:
+        condition: service_started
+      minio:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # 邮件消费者（RabbitMQ → Brevo 发信）
+  worker:
+    build: .
+    container_name: safevault-worker
+    env_file: .env
+    environment:
+      # 同 api 服务，覆盖连接地址为 Docker 内部服务名
+      DATABASE_URL: "mysql+asyncmy://safevault:${MYSQL_PASSWORD:-safevault}@mysql:3306/safevault"
+      REDIS_URL: "redis://:${REDIS_PASSWORD:-safevault}@redis:6379/0"
+      RABBITMQ_URL: "amqp://${RABBITMQ_DEFAULT_USER:-guest}:${RABBITMQ_DEFAULT_PASS:-guest}@rabbitmq:5672/"
+    command: ["python", "-m", "comsumer.mail"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      rabbitmq:
+        condition: service_started
+    restart: unless-stopped
+
+  # ==================== 反向代理 ====================
+
+  nginx:
+    image: nginx:alpine
+    container_name: safevault-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./dist/h5:/var/www/safevault:ro
+    depends_on:
+      api:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

@@ -28,3 +28,4 @@ venv/
 .coverage
 htmlcov/
 coverage.xml
+/SID/基础环境密码配置.md
