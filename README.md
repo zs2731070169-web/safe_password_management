@@ -241,4 +241,4 @@ docker compose up -d --build
 
 ## 📜 许可证
 
-私有项目，未开放源代码许可。
+本项目基于 [MIT License](LICENSE) 开源。
