@@ -144,7 +144,7 @@ function handleBack() {
           <text>忘记密码？</text>
         </button>
 
-        <!-- 新用户注册（品牌色，正向 CTA） -->
+        <!-- 新用户注册（品牌色，正向 SA） -->
         <button
           type="button"
           class="mp-text-btn mp-text-btn--register"
@@ -438,7 +438,7 @@ function handleBack() {
     }
   }
 
-  // 新用户注册（品牌色，正向 CTA）
+  // 新用户注册（品牌色，正向 SA）
   &--register {
     color: rgba($color-brand, 0.8);
 

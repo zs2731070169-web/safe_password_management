@@ -204,7 +204,7 @@ function handleRegister() {
   }
 }
 
-// 新用户注册 —— 文字链接（品牌色，正向 CTA）
+// 新用户注册 —— 文字链接（品牌色，正向 SA）
 .register-btn {
   @include button-reset;
   padding: 4px 8px;
